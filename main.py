@@ -230,11 +230,14 @@ def configure_device_and_trigger(
     device = None
 
     if prefer_existing_device and config.device:
-        try:
-            device = evdev.InputDevice(config.device.path)
-            print(f"Using configured device: {config.device.name}")
-        except Exception as e:
-            print(f"Could not access configured device at {config.device.path}: {e}")
+        devices = get_accessible_keyboard_devices()
+        for d in devices:
+            if d.path == config.device.path:
+                device = d
+                print(f"Using configured device: {config.device.name}")
+                break
+        else:
+            print(f"Could not access configured device at {config.device.path}")
             device = None
 
     if device is None:
@@ -392,11 +395,9 @@ Cleaned transcription:"""
 atexit.register(stop_opencode_server)
 
 
-def select_keyboard_device():
-    """Interactive TUI for selecting a keyboard device."""
+def get_accessible_keyboard_devices():
+    """Get list of accessible keyboard devices, showing usermod message if needed."""
     console = Console()
-
-    # Get all input devices
     device_paths = evdev.list_devices()
 
     if not device_paths:
@@ -407,7 +408,7 @@ def select_keyboard_device():
         console.print("   (then log out and log back in)")
         console.print("2. Or run with sudo:")
         console.print("   sudo uv run main.py")
-        return None
+        return []
 
     # Load devices and deduplicate by (name, phys)
     devices = []
@@ -428,6 +429,14 @@ def select_keyboard_device():
         except Exception as e:
             pass
 
+    return devices
+
+
+def select_keyboard_device():
+    """Interactive TUI for selecting a keyboard device."""
+    console = Console()
+
+    devices = get_accessible_keyboard_devices()
     if not devices:
         console.print("[red]No keyboard devices found![/red]")
         return None
@@ -759,24 +768,7 @@ class WhisperRecorder:
     def find_keyboard_device(self):
         """Find the configured keyboard input device."""
         config = load_config()
-        device_paths = evdev.list_devices()
-
-        if not device_paths:
-            print("\nNo input devices accessible!")
-            print("You need to either:")
-            print("1. Add yourself to the 'input' group:")
-            print("   sudo usermod -a -G input $USER")
-            print("   (then log out and log back in)")
-            print("2. Or run with sudo:")
-            print("   sudo uv run main.py")
-            return None
-
-        devices = []
-        for path in device_paths:
-            try:
-                devices.append(evdev.InputDevice(path))
-            except Exception as e:
-                print(f"Could not access {path}: {e}")
+        devices = get_accessible_keyboard_devices()
 
         if not devices:
             return None
