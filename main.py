@@ -21,19 +21,14 @@ import numpy as np
 import readchar
 import requests
 import sounddevice as sd
-from evdev import UInput, ecodes
-from flask import Flask, Response, jsonify, render_template, request
+from evdev import ecodes
+from flask import Flask, Response, render_template, request
 from pydantic import BaseModel, field_validator
-from rich.align import Align
-from rich.columns import Columns
 from rich.console import Console, Group
 from rich.layout import Layout
 from rich.live import Live
 from rich.panel import Panel
-from rich.rule import Rule
-from rich.spinner import Spinner
 from rich.table import Table
-from rich.text import Text
 from scipy import signal
 from scipy.io import wavfile
 
@@ -317,7 +312,6 @@ def select_trigger_key(device):
 
     def build_display():
         """Build the display content."""
-        from rich.console import Group
 
         title = Panel(
             "[bold cyan]Select Trigger Key[/bold cyan]\n"
@@ -648,7 +642,7 @@ def get_accessible_keyboard_devices():
                 if unique_key not in seen:
                     seen.add(unique_key)
                     devices.append(device)
-        except Exception as e:
+        except Exception:
             pass
 
     return devices
@@ -666,7 +660,6 @@ def select_whisper_model(available_models):
 
     def build_display(idx):
         """Build the display content."""
-        from rich.console import Group
 
         title = Panel(
             "[bold cyan]Select Whisper Model[/bold cyan]\n"
@@ -723,7 +716,6 @@ def select_llm_model(available_models):
 
     def build_display(idx, query, filtered):
         """Build the display content."""
-        from rich.console import Group
 
         title_text = "[bold cyan]Select LLM Model[/bold cyan]\n"
         if query:
@@ -755,7 +747,9 @@ def select_llm_model(available_models):
         while True:
             key = readchar.readkey()
 
-            if key == "\x1b" or (hasattr(readchar.key, 'ESC') and key == readchar.key.ESC):
+            if key == "\x1b" or (
+                hasattr(readchar.key, "ESC") and key == readchar.key.ESC
+            ):
                 live.stop()
                 console.print("[yellow]Selection cancelled[/yellow]")
                 return None
@@ -778,7 +772,9 @@ def select_llm_model(available_models):
                         m for m in model_list if search_query.lower() in m.lower()
                     ]
                     selected_idx = 0
-                    live.update(build_display(selected_idx, search_query, filtered_models))
+                    live.update(
+                        build_display(selected_idx, search_query, filtered_models)
+                    )
             elif len(key) == 1 and key.isprintable():
                 search_query += key
                 filtered_models = [
@@ -804,7 +800,6 @@ def select_keyboard_device():
 
     def build_display(idx):
         """Build the display content."""
-        from rich.console import Group
 
         # Create title panel
         title = Panel(
@@ -1052,7 +1047,7 @@ class WhisperRecorder:
                         if socket.is_socket() or socket.name.startswith("wayland-"):
                             wayland_display = socket.name
                             break
-            except:
+            except Exception:
                 pass
 
             # Run wl-copy as original user with proper environment
@@ -1260,10 +1255,10 @@ def sse():
         while True:
             try:
                 msg = sse_queue.get(timeout=30)
-                yield f"event: recording\n"
+                yield "event: recording\n"
                 yield f"data: {json.dumps(msg)}\n\n"
             except queue.Empty:
-                yield f": heartbeat\n\n"
+                yield ": heartbeat\n\n"
 
     response = Response(event_stream(), mimetype="text/event-stream")
     response.headers["Cache-Control"] = "no-cache"
@@ -1298,7 +1293,6 @@ def dev_select_device():
 
 def main():
     global recorder
-    import sys
 
     console = Console()
 
@@ -1359,7 +1353,9 @@ def main():
     trigger_key_name = get_key_name(trigger_key_code)
 
     logger.model_name = recorder.model_path.name
-    logger.llm_model = config.llm_model.split("/")[1] if "/" in config.llm_model else config.llm_model
+    logger.llm_model = (
+        config.llm_model.split("/")[1] if "/" in config.llm_model else config.llm_model
+    )
     logger.server(f"Whisper Hotkey Recorder [{recorder.model_path.name}]")
     logger.server(f"Press {trigger_key_name} to start/stop recording")
     logger.server("Web interface: http://127.0.0.1:5000\n")
@@ -1374,7 +1370,7 @@ def main():
 
         # Configure Flask logging to use RichLogger
         flask_handler = RichLogHandler(logger)
-        flask_handler.setFormatter(logging.Formatter('%(message)s'))
+        flask_handler.setFormatter(logging.Formatter("%(message)s"))
 
         # Configure Flask app logger
         app.logger.handlers.clear()
@@ -1382,7 +1378,7 @@ def main():
         app.logger.setLevel(logging.INFO)
 
         # Configure Werkzeug (Flask development server) logger
-        werkzeug_logger = logging.getLogger('werkzeug')
+        werkzeug_logger = logging.getLogger("werkzeug")
         werkzeug_logger.handlers.clear()
         werkzeug_logger.addHandler(flask_handler)
         werkzeug_logger.setLevel(logging.INFO)
@@ -1396,7 +1392,9 @@ def main():
         listener_thread.start()
 
         # Run Flask app (use 127.0.0.1 to avoid DNS timeout on 0.0.0.0)
-        app.run(host="127.0.0.1", port=5000, debug=False, threaded=True, use_reloader=False)
+        app.run(
+            host="127.0.0.1", port=5000, debug=False, threaded=True, use_reloader=False
+        )
 
 
 if __name__ == "__main__":
