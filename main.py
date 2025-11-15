@@ -25,6 +25,50 @@ from rich.text import Text
 from rich.live import Live
 from rich.layout import Layout
 import readchar
+from pydantic import BaseModel
+from typing import Optional
+
+
+class DeviceConfig(BaseModel):
+    name: str
+    path: str
+    phys: Optional[str] = None
+
+
+class AppConfig(BaseModel):
+    device: Optional[DeviceConfig] = None
+
+
+def get_config_path():
+    """Get the path to the config file."""
+    home = Path.home()
+    config_dir = home / ".local" / "share" / "slap"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    return config_dir / "config.json"
+
+
+def load_config():
+    """Load config from file or return default."""
+    config_path = get_config_path()
+    if config_path.exists():
+        try:
+            with open(config_path, "r") as f:
+                data = json.load(f)
+            return AppConfig.model_validate(data)
+        except Exception as e:
+            print(f"Error loading config: {e}")
+    return AppConfig()
+
+
+def save_config(config: AppConfig):
+    """Save config to file."""
+    config_path = get_config_path()
+    try:
+        with open(config_path, "w") as f:
+            json.dump(config.model_dump(), f, indent=2)
+    except Exception as e:
+        print(f"Error saving config: {e}")
+
 
 # SSE message queue
 sse_queue = queue.Queue()
@@ -37,15 +81,16 @@ OPENCODE_URL = f"http://127.0.0.1:{OPENCODE_PORT}"
 
 app = Flask(__name__)
 
+
 def start_opencode_server():
     """Start the opencode server in the background."""
     global opencode_process, opencode_session_id
 
     print("Starting OpenCode server...")
     opencode_process = subprocess.Popen(
-        ['opencode', 'serve', '--port', str(OPENCODE_PORT)],
+        ["opencode", "serve", "--port", str(OPENCODE_PORT)],
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
+        stderr=subprocess.DEVNULL,
     )
 
     # Wait for server to be ready
@@ -66,15 +111,16 @@ def start_opencode_server():
         response = requests.post(
             f"{OPENCODE_URL}/session",
             json={"title": "Whisper Transcription Cleanup"},
-            timeout=5
+            timeout=5,
         )
         if response.status_code == 200:
-            opencode_session_id = response.json().get('id')
+            opencode_session_id = response.json().get("id")
             print(f"Created OpenCode session: {opencode_session_id}")
         else:
             print(f"Failed to create session: {response.status_code}")
     except Exception as e:
         print(f"Error creating session: {e}")
+
 
 def stop_opencode_server():
     """Stop the opencode server."""
@@ -86,6 +132,7 @@ def stop_opencode_server():
             opencode_process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             opencode_process.kill()
+
 
 def clean_transcription(raw_text):
     """Clean up transcription using OpenCode API."""
@@ -111,28 +158,20 @@ Cleaned transcription:"""
         response = requests.post(
             f"{OPENCODE_URL}/session/{opencode_session_id}/message",
             json={
-                "parts": [
-                    {
-                        "type": "text",
-                        "text": prompt
-                    }
-                ],
-                "model": {
-                    "providerID": "anthropic",
-                    "modelID": "claude-haiku-4-5"
-                }
+                "parts": [{"type": "text", "text": prompt}],
+                "model": {"providerID": "anthropic", "modelID": "claude-haiku-4-5"},
             },
-            timeout=30
+            timeout=30,
         )
 
         if response.status_code == 200:
             data = response.json()
             # Extract text from parts
-            parts = data.get('parts', [])
-            cleaned_text = ''
+            parts = data.get("parts", [])
+            cleaned_text = ""
             for part in parts:
-                if part.get('type') == 'text':
-                    cleaned_text += part.get('text', '')
+                if part.get("type") == "text":
+                    cleaned_text += part.get("text", "")
 
             if cleaned_text.strip():
                 print(f"Cleaned: {raw_text} -> {cleaned_text.strip()}")
@@ -144,8 +183,10 @@ Cleaned transcription:"""
 
     return raw_text
 
+
 # Register cleanup handler
 atexit.register(stop_opencode_server)
+
 
 def select_keyboard_device():
     """Interactive TUI for selecting a keyboard device."""
@@ -200,7 +241,7 @@ def select_keyboard_device():
         title = Panel(
             "[bold cyan]Select Keyboard Device[/bold cyan]\n"
             "Use ↑/↓ or j/k to navigate, Enter to select, q to quit",
-            border_style="cyan"
+            border_style="cyan",
         )
 
         # Create device list table
@@ -217,32 +258,37 @@ def select_keyboard_device():
                 cursor,
                 f"[{name_style}]{device.name}[/{name_style}]",
                 device.path,
-                device.phys or "N/A"
+                device.phys or "N/A",
             )
 
         return Group(title, "", table)
 
-    with Live(build_display(selected_idx), console=console, refresh_per_second=10) as live:
+    with Live(
+        build_display(selected_idx), console=console, refresh_per_second=10
+    ) as live:
         while True:
             # Read keyboard input
             key = readchar.readkey()
 
             # Handle navigation
-            if key == readchar.key.UP or key == 'k':
+            if key == readchar.key.UP or key == "k":
                 selected_idx = (selected_idx - 1) % len(devices)
                 live.update(build_display(selected_idx))
-            elif key == readchar.key.DOWN or key == 'j':
+            elif key == readchar.key.DOWN or key == "j":
                 selected_idx = (selected_idx + 1) % len(devices)
                 live.update(build_display(selected_idx))
-            elif key == readchar.key.ENTER or key == '\r' or key == '\n':
+            elif key == readchar.key.ENTER or key == "\r" or key == "\n":
                 selected = devices[selected_idx]
                 live.stop()
-                console.print(f"[green]✓[/green] Selected: [bold]{selected.name}[/bold] ({selected.path})")
+                console.print(
+                    f"[green]✓[/green] Selected: [bold]{selected.name}[/bold] ({selected.path})"
+                )
                 return selected
-            elif key == 'q' or key == readchar.key.ESC:
+            elif key == "q" or key == readchar.key.ESC:
                 live.stop()
                 console.print("[yellow]Selection cancelled[/yellow]")
                 return None
+
 
 class WhisperRecorder:
     def __init__(self, whisper_path, model_path, recordings_dir):
@@ -256,15 +302,16 @@ class WhisperRecorder:
         self.available_models = []
 
         # Get device's native sample rate and set whisper target
-        device_info = sd.query_devices(kind='input')
-        self.recording_sample_rate = int(device_info['default_samplerate'])
+        device_info = sd.query_devices(kind="input")
+        self.recording_sample_rate = int(device_info["default_samplerate"])
         self.whisper_sample_rate = 16000
 
         # Find available models (look in ./models relative to main.py)
         models_dir = Path(__file__).parent / "models"
         if models_dir.exists():
             self.available_models = [
-                model for model in sorted(models_dir.glob("ggml-*.bin"))
+                model
+                for model in sorted(models_dir.glob("ggml-*.bin"))
                 if "for-tests" not in model.name
             ]
 
@@ -289,7 +336,7 @@ class WhisperRecorder:
             samplerate=self.recording_sample_rate,
             channels=1,
             callback=self.audio_callback,
-            dtype=np.float32
+            dtype=np.float32,
         )
         self.stream.start()
 
@@ -328,14 +375,16 @@ class WhisperRecorder:
         # Resample to 16kHz if needed
         if self.recording_sample_rate != self.whisper_sample_rate:
             # Calculate number of samples after resampling
-            num_samples = int(len(audio_array) * self.whisper_sample_rate / self.recording_sample_rate)
+            num_samples = int(
+                len(audio_array) * self.whisper_sample_rate / self.recording_sample_rate
+            )
             audio_array = signal.resample(audio_array, num_samples)
 
         # Convert to int16 for WAV file
         audio_int16 = (audio_array * 32767).astype(np.int16)
 
         # Save to temporary WAV file
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as tmp_file:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
             tmp_filename = tmp_file.name
             wavfile.write(tmp_filename, self.whisper_sample_rate, audio_int16)
 
@@ -344,23 +393,25 @@ class WhisperRecorder:
             result = subprocess.run(
                 [
                     str(self.whisper_path),
-                    '--model', str(self.model_path),
-                    '--file', tmp_filename,
-                    '--no-timestamps',
-                    '--output-txt'
+                    "--model",
+                    str(self.model_path),
+                    "--file",
+                    tmp_filename,
+                    "--no-timestamps",
+                    "--output-txt",
                 ],
                 capture_output=True,
                 text=True,
-                timeout=60
+                timeout=60,
             )
 
             if result.returncode == 0:
                 # Try reading from output file first
-                txt_file = tmp_filename.replace('.wav', '.txt')
+                txt_file = tmp_filename.replace(".wav", ".txt")
                 text = None
 
                 if os.path.exists(txt_file):
-                    with open(txt_file, 'r') as f:
+                    with open(txt_file, "r") as f:
                         text = f.read().strip()
                     os.unlink(txt_file)
                 else:
@@ -387,11 +438,11 @@ class WhisperRecorder:
         # Clean up the transcription using OpenCode
         cleaned_text = clean_transcription(raw_text)
 
-        timestamp = datetime.now().isoformat().replace(':', '-').replace('.', '-')
+        timestamp = datetime.now().isoformat().replace(":", "-").replace(".", "-")
         filename = f"{timestamp}.txt"
         filepath = self.recordings_dir / filename
 
-        with open(filepath, 'w') as f:
+        with open(filepath, "w") as f:
             f.write(cleaned_text)
 
         print(f"Saved to {filename}")
@@ -400,31 +451,30 @@ class WhisperRecorder:
         self._copy_to_clipboard(cleaned_text)
 
         # Notify SSE clients
-        sse_queue.put({
-            'filename': filename,
-            'text': cleaned_text,
-            'timestamp': timestamp
-        })
+        sse_queue.put(
+            {"filename": filename, "text": cleaned_text, "timestamp": timestamp}
+        )
 
     def _copy_to_clipboard(self, text):
         """Copy text to clipboard using wl-copy."""
-        sudo_user = os.environ.get('SUDO_USER')
+        sudo_user = os.environ.get("SUDO_USER")
 
         if sudo_user:
             # Get the original user's UID
             import pwd
+
             pw = pwd.getpwnam(sudo_user)
             uid = pw.pw_uid
-            runtime_dir = f'/run/user/{uid}'
+            runtime_dir = f"/run/user/{uid}"
 
             # Detect the actual Wayland display by checking for socket files
-            wayland_display = 'wayland-0'  # default
+            wayland_display = "wayland-0"  # default
             try:
                 runtime_path = Path(runtime_dir)
                 if runtime_path.exists():
                     # Look for wayland-* files
-                    for socket in runtime_path.glob('wayland-*'):
-                        if socket.is_socket() or socket.name.startswith('wayland-'):
+                    for socket in runtime_path.glob("wayland-*"):
+                        if socket.is_socket() or socket.name.startswith("wayland-"):
                             wayland_display = socket.name
                             break
             except:
@@ -432,16 +482,26 @@ class WhisperRecorder:
 
             # Run wl-copy as original user with proper environment
             cmd = [
-                'sudo', '-i', '-u', sudo_user,
-                'env',
-                f'XDG_RUNTIME_DIR={runtime_dir}',
-                f'WAYLAND_DISPLAY={wayland_display}',
-                'wl-copy'
+                "sudo",
+                "-i",
+                "-u",
+                sudo_user,
+                "env",
+                f"XDG_RUNTIME_DIR={runtime_dir}",
+                f"WAYLAND_DISPLAY={wayland_display}",
+                "wl-copy",
             ]
 
             # Pass text via stdin
             try:
-                subprocess.run(cmd, input=text, check=True, capture_output=True, text=True, timeout=5)
+                subprocess.run(
+                    cmd,
+                    input=text,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
                 print("Copied to clipboard!")
             except subprocess.CalledProcessError as e:
                 print(f"Failed to copy to clipboard: {e.stderr.strip()}")
@@ -452,7 +512,9 @@ class WhisperRecorder:
         else:
             # Not running under sudo, use wl-copy directly
             try:
-                subprocess.run(['wl-copy'], input=text, check=True, capture_output=True, text=True)
+                subprocess.run(
+                    ["wl-copy"], input=text, check=True, capture_output=True, text=True
+                )
                 print("Copied to clipboard!")
             except subprocess.CalledProcessError as e:
                 print(f"Failed to copy to clipboard: {e.stderr.strip()}")
@@ -463,13 +525,15 @@ class WhisperRecorder:
         """Get list of recordings sorted by timestamp (newest first)."""
         recordings = []
         for file in sorted(self.recordings_dir.glob("*.txt"), reverse=True):
-            with open(file, 'r') as f:
+            with open(file, "r") as f:
                 text = f.read()
-            recordings.append({
-                'filename': file.name,
-                'text': text,
-                'timestamp': file.name.replace('.txt', '')
-            })
+            recordings.append(
+                {
+                    "filename": file.name,
+                    "text": text,
+                    "timestamp": file.name.replace(".txt", ""),
+                }
+            )
         return recordings
 
     def set_model(self, model_name):
@@ -489,7 +553,8 @@ class WhisperRecorder:
             self.start_recording()
 
     def find_keyboard_device(self):
-        """Find the first keyboard input device."""
+        """Find the configured keyboard input device."""
+        config = load_config()
         device_paths = evdev.list_devices()
 
         if not device_paths:
@@ -512,19 +577,46 @@ class WhisperRecorder:
         if not devices:
             return None
 
-        # First pass: find device with F2 key
+        # If we have a configured device, try to find it first
+        if config.device:
+            # Try to match by path first (most reliable)
+            for device in devices:
+                if device.path == config.device.path:
+                    print(f"Found configured device by path: {device.name}")
+                    return device
+
+            # Try to match by name and physical location
+            for device in devices:
+                if (
+                    device.name == config.device.name
+                    and device.phys == config.device.phys
+                ):
+                    print(f"Found configured device by name/phys: {device.name}")
+                    return device
+
+            # Try to match by name only (less reliable)
+            for device in devices:
+                if device.name == config.device.name:
+                    print(f"Found configured device by name: {device.name}")
+                    return device
+
+            print(f"Configured device not found: {config.device.name}")
+
+        # Fallback: find device with F2 key
         for device in devices:
             caps = device.capabilities(verbose=False)
-            if ecodes.EV_KEY in caps and ecodes.KEY_F1 in caps[ecodes.EV_KEY]:
+            if ecodes.EV_KEY in caps and ecodes.KEY_F2 in caps[ecodes.EV_KEY]:
+                print(f"Using fallback device with F2 key: {device.name}")
                 return device
 
-        # Second pass: find any keyboard device
+        # Final fallback: find any keyboard device
         for device in devices:
             caps = device.capabilities(verbose=False)
             if ecodes.EV_KEY in caps:
                 # Check if it has typical keyboard keys
                 keys = caps[ecodes.EV_KEY]
                 if ecodes.KEY_A in keys or ecodes.KEY_SPACE in keys:
+                    print(f"Using fallback keyboard device: {device.name}")
                     return device
 
         return None
@@ -547,38 +639,43 @@ class WhisperRecorder:
         except Exception as e:
             print(f"Error reading events: {e}")
 
+
 # Global recorder instance
 recorder = None
 
+
 # Flask routes
-@app.route('/')
+@app.route("/")
 def index():
     """Render main page."""
     recordings = recorder.get_recordings()
     models = [model.name for model in recorder.available_models]
     current_model = recorder.model_path.name
-    return render_template('index.html',
-                         recordings=recordings,
-                         models=models,
-                         current_model=current_model)
+    return render_template(
+        "index.html", recordings=recordings, models=models, current_model=current_model
+    )
 
-@app.route('/recordings')
+
+@app.route("/recordings")
 def recordings_list():
     """Return recordings list as HTML fragment."""
     recordings = recorder.get_recordings()
-    return render_template('recordings.html', recordings=recordings)
+    return render_template("recordings.html", recordings=recordings)
 
-@app.route('/set-model', methods=['POST'])
+
+@app.route("/set-model", methods=["POST"])
 def set_model():
     """Change the active model."""
-    model_name = request.form.get('model')
+    model_name = request.form.get("model")
     if recorder.set_model(model_name):
         return f'<div class="success">Switched to {model_name}</div>'
     return '<div class="error">Failed to switch model</div>', 400
 
-@app.route('/sse')
+
+@app.route("/sse")
 def sse():
     """Server-Sent Events endpoint for live updates."""
+
     def event_stream():
         while True:
             try:
@@ -588,18 +685,21 @@ def sse():
             except queue.Empty:
                 yield f": heartbeat\n\n"
 
-    response = Response(event_stream(), mimetype='text/event-stream')
-    response.headers['Cache-Control'] = 'no-cache'
-    response.headers['X-Accel-Buffering'] = 'no'
+    response = Response(event_stream(), mimetype="text/event-stream")
+    response.headers["Cache-Control"] = "no-cache"
+    response.headers["X-Accel-Buffering"] = "no"
     return response
+
 
 def run_hotkey_listener():
     """Run the F2 hotkey listener in event loop."""
     asyncio.run(recorder.listen_for_hotkey())
 
+
 def dev_select_device():
     """Dev entry point to test device selector."""
     from rich.console import Console
+
     console = Console()
 
     console.print("[bold cyan]Device Selector Test[/bold cyan]\n")
@@ -612,9 +712,25 @@ def dev_select_device():
     else:
         console.print("[yellow]No device selected[/yellow]")
 
+
 def main():
     global recorder
     import sys
+
+    # Load config and check if setup is needed
+    config = load_config()
+    if not config.device:
+        print("No device configured. Running setup...")
+        device = select_keyboard_device()
+        if device:
+            config.device = DeviceConfig(
+                name=device.name, path=device.path, phys=device.phys
+            )
+            save_config(config)
+            print(f"Device saved to config: {device.name}")
+        else:
+            print("Setup cancelled. Exiting.")
+            return
 
     # Path to whisper-cli binary
     whisper_path = Path(__file__).parent / "bin" / "whisper-cli"
@@ -623,8 +739,11 @@ def main():
         return
 
     # Default to tiny model, or use path from command line
-    model_path = Path(sys.argv[1]) if len(sys.argv) > 1 else \
-                 Path(__file__).parent / "models" / "ggml-tiny.bin"
+    model_path = (
+        Path(sys.argv[1])
+        if len(sys.argv) > 1
+        else Path(__file__).parent / "models" / "ggml-tiny.bin"
+    )
 
     if not model_path.exists():
         print(f"Error: model not found at {model_path}")
@@ -653,10 +772,12 @@ def main():
     listener_thread.start()
 
     # Run Flask app
-    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
+    app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
+
 
 if __name__ == "__main__":
     import sys
+
     if len(sys.argv) > 1 and sys.argv[1] == "dev":
         dev_select_device()
     else:

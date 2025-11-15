@@ -8,6 +8,7 @@ dependencies = [
     "evdev>=1.9.2",
     "flask>=3.0.0",
     "numpy>=2.3.4",
+    "pydantic>=2.12.4",
     "readchar>=4.0.0",
     "requests>=2.31.0",
     "rich>=13.0.0",
