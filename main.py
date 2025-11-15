@@ -18,15 +18,102 @@ import time
 import json
 import requests
 import atexit
-from rich.console import Console
+from rich.console import Console, Group
 from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
 from rich.live import Live
 from rich.layout import Layout
+from rich.align import Align
+from rich.columns import Columns
+from rich.rule import Rule
+from rich.spinner import Spinner
+from collections import deque
+from rich.rule import Rule
+from rich.spinner import Spinner
+from collections import deque
 import readchar
 from pydantic import BaseModel, field_validator
 from typing import Optional
+
+
+class RichLogger:
+    """Rich-based logger with three panels for different message types."""
+
+    def __init__(self):
+        self.console = Console()
+        self.opencode_messages = deque(maxlen=50)
+        self.transcription_messages = deque(maxlen=50)
+        self.server_messages = deque(maxlen=50)
+        self.layout = Layout()
+        self.live = None  # Will be set by main()
+        self._setup_layout()
+
+    def _setup_layout(self):
+        """Setup the three-panel layout."""
+        self.layout.split_column(
+            Layout(name="header", size=3),
+            Layout(name="body"),
+        )
+        self.layout["body"].split_row(
+            Layout(name="opencode", ratio=1),
+            Layout(name="transcription", ratio=1),
+            Layout(name="server", ratio=1),
+        )
+
+    def _create_panel(self, messages, title, style):
+        """Create a panel with messages."""
+        if not messages:
+            content = "[dim]No messages yet[/dim]"
+        else:
+            lines = []
+            for msg in messages:
+                lines.append(msg)
+            content = "\n".join(lines[-10:])  # Show last 10 messages
+
+        return Panel(content, title=title, border_style=style, padding=(0, 1))
+
+    def update_display(self):
+        """Update the live display."""
+        header = Panel(
+            "[bold cyan]Whisper Hotkey Recorder[/bold cyan] - Real-time Logs",
+            border_style="cyan",
+        )
+
+        opencode_panel = self._create_panel(self.opencode_messages, "OpenCode", "green")
+        transcription_panel = self._create_panel(
+            self.transcription_messages, "Transcription", "blue"
+        )
+        server_panel = self._create_panel(self.server_messages, "Server", "yellow")
+
+        self.layout["header"].update(header)
+        self.layout["opencode"].update(opencode_panel)
+        self.layout["transcription"].update(transcription_panel)
+        self.layout["server"].update(server_panel)
+
+    def opencode(self, message):
+        """Add OpenCode message."""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.opencode_messages.append(f"[dim]{timestamp}[/dim] {message}")
+        self._refresh()
+
+    def transcription(self, message):
+        """Add transcription message."""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.transcription_messages.append(f"[dim]{timestamp}[/dim] {message}")
+        self._refresh()
+
+    def server(self, message):
+        """Add server message."""
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.server_messages.append(f"[dim]{timestamp}[/dim] {message}")
+        self._refresh()
+
+    def _refresh(self):
+        """Update the display if live object is set."""
+        self.update_display()
+        if self.live:
+            self.live.update(self.layout)
 
 
 class DeviceConfig(BaseModel):
@@ -71,7 +158,7 @@ def load_config():
                 data = json.load(f)
             return AppConfig.model_validate(data)
         except Exception as e:
-            print(f"Error loading config: {e}")
+            logger.server(f"Error loading config: {e}")
     return AppConfig()
 
 
@@ -82,7 +169,7 @@ def save_config(config: AppConfig):
         with open(config_path, "w") as f:
             json.dump(config.model_dump(), f, indent=2)
     except Exception as e:
-        print(f"Error saving config: {e}")
+        logger.server(f"Error saving config: {e}")
 
 
 def get_key_name(key_code):
@@ -234,16 +321,16 @@ def configure_device_and_trigger(
         for d in devices:
             if d.path == config.device.path:
                 device = d
-                print(f"Using configured device: {config.device.name}")
+                logger.server(f"Using configured device: {config.device.name}")
                 break
         else:
-            print(f"Could not access configured device at {config.device.path}")
+            logger.server(f"Could not access configured device at {config.device.path}")
             device = None
 
     if device is None:
         device = select_keyboard_device()
         if not device:
-            print("Device selection cancelled.")
+            logger.server("Device selection cancelled.")
             return False
 
     device_info = {
@@ -261,7 +348,7 @@ def configure_device_and_trigger(
             pass
 
     if trigger_key is None:
-        print("Trigger key selection cancelled.")
+        logger.server("Trigger key selection cancelled.")
         return False
 
     config.device = DeviceConfig(
@@ -272,8 +359,8 @@ def configure_device_and_trigger(
     )
     save_config(config)
     key_name = get_key_name(trigger_key)
-    print(f"Device saved to config: {device.name}")
-    print(f"Trigger key saved: {key_name}")
+    logger.server(f"Device saved to config: {device.name}")
+    logger.server(f"Trigger key saved: {key_name}")
     return True
 
 
@@ -293,7 +380,7 @@ def start_opencode_server():
     """Start the opencode server in the background."""
     global opencode_process, opencode_session_id
 
-    print("Starting OpenCode server...")
+    logger.server("Starting OpenCode server...")
     opencode_process = subprocess.Popen(
         ["opencode", "serve", "--port", str(OPENCODE_PORT)],
         stdout=subprocess.DEVNULL,
@@ -306,12 +393,12 @@ def start_opencode_server():
         try:
             # Try to connect to the server (any endpoint will do)
             response = requests.get(f"{OPENCODE_URL}/", timeout=1)
-            print("OpenCode server started!")
+            logger.server("OpenCode server started!")
             break
         except (requests.ConnectionError, requests.Timeout):
             time.sleep(0.5)
     else:
-        print("Warning: OpenCode server may not be ready")
+        logger.server("Warning: OpenCode server may not be ready")
 
     # Create a session
     try:
@@ -322,18 +409,18 @@ def start_opencode_server():
         )
         if response.status_code == 200:
             opencode_session_id = response.json().get("id")
-            print(f"Created OpenCode session: {opencode_session_id}")
+            logger.server(f"Created OpenCode session: {opencode_session_id}")
         else:
-            print(f"Failed to create session: {response.status_code}")
+            logger.server(f"Failed to create session: {response.status_code}")
     except Exception as e:
-        print(f"Error creating session: {e}")
+        logger.server(f"Error creating session: {e}")
 
 
 def stop_opencode_server():
     """Stop the opencode server."""
     global opencode_process
     if opencode_process:
-        print("Stopping OpenCode server...")
+        logger.server("Stopping OpenCode server...")
         opencode_process.terminate()
         try:
             opencode_process.wait(timeout=5)
@@ -346,7 +433,7 @@ def clean_transcription(raw_text):
     global opencode_session_id
 
     if not opencode_session_id:
-        print("No OpenCode session, returning raw text")
+        logger.opencode("No OpenCode session, returning raw text")
         return raw_text
 
     prompt = f"""Clean up this raw speech-to-text transcription. ONLY output the cleaned text with no additional commentary.
@@ -381,12 +468,12 @@ Cleaned transcription:"""
                     cleaned_text += part.get("text", "")
 
             if cleaned_text.strip():
-                print(f"Cleaned: {raw_text} -> {cleaned_text.strip()}")
+                logger.opencode(f"Cleaned: {raw_text} -> {cleaned_text.strip()}")
                 return cleaned_text.strip()
         else:
-            print(f"OpenCode API error: {response.status_code}")
+            logger.opencode(f"OpenCode API error: {response.status_code}")
     except Exception as e:
-        print(f"Error cleaning transcription: {e}")
+        logger.opencode(f"Error cleaning transcription: {e}")
 
     return raw_text
 
@@ -516,7 +603,12 @@ class WhisperRecorder:
 
         # Get device's native sample rate and set whisper target
         device_info = sd.query_devices(kind="input")
-        self.recording_sample_rate = int(device_info["default_samplerate"])
+        if isinstance(device_info, dict):
+            self.recording_sample_rate = int(
+                device_info.get("default_samplerate", 44100)
+            )
+        else:
+            self.recording_sample_rate = int(device_info.default_samplerate)
         self.whisper_sample_rate = 16000
 
         # Find available models (look in ./models relative to main.py)
@@ -531,7 +623,7 @@ class WhisperRecorder:
     def audio_callback(self, indata, frames, time, status):
         """Callback for audio recording."""
         if status:
-            print(f"Audio status: {status}")
+            logger.transcription(f"Audio status: {status}")
         if self.is_recording:
             self.audio_data.append(indata.copy())
 
@@ -540,7 +632,7 @@ class WhisperRecorder:
         if self.is_recording:
             return
 
-        print("Recording started... (press hotkey to stop)")
+        logger.transcription("Recording started... (press hotkey to stop)")
         self.is_recording = True
         self.audio_data = []
 
@@ -558,7 +650,7 @@ class WhisperRecorder:
         if not self.is_recording:
             return
 
-        print("Recording stopped. Processing...")
+        logger.transcription("Recording stopped. Processing...")
         self.is_recording = False
 
         # Stop the stream
@@ -569,7 +661,7 @@ class WhisperRecorder:
 
         # Check if we have audio data
         if not self.audio_data:
-            print("No audio recorded!")
+            logger.transcription("No audio recorded!")
             return
 
         # Copy audio data before starting thread
@@ -594,7 +686,7 @@ class WhisperRecorder:
             audio_array = signal.resample(audio_array, num_samples)
 
         # Convert to int16 for WAV file
-        audio_int16 = (audio_array * 32767).astype(np.int16)
+        audio_int16 = np.array(audio_array * 32767, dtype=np.int16)
 
         # Save to temporary WAV file
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp_file:
@@ -632,14 +724,14 @@ class WhisperRecorder:
                     text = result.stdout.strip()
 
                 if text:
-                    print(f"Raw transcription: {text}")
+                    logger.transcription(f"Raw transcription: {text}")
                     self._save_transcription(text)
                 else:
-                    print("No speech detected.")
+                    logger.transcription("No speech detected.")
             else:
-                print(f"Whisper failed (code {result.returncode})")
+                logger.transcription(f"Whisper failed (code {result.returncode})")
                 if result.stderr:
-                    print(f"Error: {result.stderr[:200]}")
+                    logger.transcription(f"Error: {result.stderr[:200]}")
 
         finally:
             # Clean up temporary file
@@ -658,7 +750,7 @@ class WhisperRecorder:
         with open(filepath, "w") as f:
             f.write(cleaned_text)
 
-        print(f"Saved to {filename}")
+        logger.transcription(f"Saved to {filename}")
 
         # Copy to clipboard
         self._copy_to_clipboard(cleaned_text)
@@ -715,24 +807,24 @@ class WhisperRecorder:
                     text=True,
                     timeout=5,
                 )
-                print("Copied to clipboard!")
+                logger.transcription("Copied to clipboard!")
             except subprocess.CalledProcessError as e:
-                print(f"Failed to copy to clipboard: {e.stderr.strip()}")
+                logger.transcription(f"Failed to copy to clipboard: {e.stderr.strip()}")
             except subprocess.TimeoutExpired:
-                print("Clipboard operation timed out")
+                logger.transcription("Clipboard operation timed out")
             except FileNotFoundError:
-                print("wl-copy not found. Install wl-clipboard package.")
+                logger.transcription("wl-copy not found. Install wl-clipboard package.")
         else:
             # Not running under sudo, use wl-copy directly
             try:
                 subprocess.run(
                     ["wl-copy"], input=text, check=True, capture_output=True, text=True
                 )
-                print("Copied to clipboard!")
+                logger.transcription("Copied to clipboard!")
             except subprocess.CalledProcessError as e:
-                print(f"Failed to copy to clipboard: {e.stderr.strip()}")
+                logger.transcription(f"Failed to copy to clipboard: {e.stderr.strip()}")
             except FileNotFoundError:
-                print("wl-copy not found. Install wl-clipboard package.")
+                logger.transcription("wl-copy not found. Install wl-clipboard package.")
 
     def get_recordings(self):
         """Get list of recordings sorted by timestamp (newest first)."""
@@ -754,7 +846,7 @@ class WhisperRecorder:
         model_path = Path(__file__).parent / "models" / model_name
         if model_path.exists():
             self.model_path = model_path
-            print(f"Switched to model: {model_name}")
+            logger.server(f"Switched to model: {model_name}")
             return True
         return False
 
@@ -778,7 +870,7 @@ class WhisperRecorder:
             # Try to match by path first (most reliable)
             for device in devices:
                 if device.path == config.device.path:
-                    print(f"Found configured device by path: {device.name}")
+                    logger.server(f"Found configured device by path: {device.name}")
                     return device
 
             # Try to match by name and physical location
@@ -787,22 +879,24 @@ class WhisperRecorder:
                     device.name == config.device.name
                     and device.phys == config.device.phys
                 ):
-                    print(f"Found configured device by name/phys: {device.name}")
+                    logger.server(
+                        f"Found configured device by name/phys: {device.name}"
+                    )
                     return device
 
             # Try to match by name only (less reliable)
             for device in devices:
                 if device.name == config.device.name:
-                    print(f"Found configured device by name: {device.name}")
+                    logger.server(f"Found configured device by name: {device.name}")
                     return device
 
-            print(f"Configured device not found: {config.device.name}")
+            logger.server(f"Configured device not found: {config.device.name}")
 
         # Fallback: find device with F2 key
         for device in devices:
             caps = device.capabilities(verbose=False)
             if ecodes.EV_KEY in caps and ecodes.KEY_F2 in caps[ecodes.EV_KEY]:
-                print(f"Using fallback device with F2 key: {device.name}")
+                logger.server(f"Using fallback device with F2 key: {device.name}")
                 return device
 
         # Final fallback: find any keyboard device
@@ -812,7 +906,7 @@ class WhisperRecorder:
                 # Check if it has typical keyboard keys
                 keys = caps[ecodes.EV_KEY]
                 if ecodes.KEY_A in keys or ecodes.KEY_SPACE in keys:
-                    print(f"Using fallback keyboard device: {device.name}")
+                    logger.server(f"Using fallback keyboard device: {device.name}")
                     return device
 
         return None
@@ -822,10 +916,10 @@ class WhisperRecorder:
         config = load_config()
         device = self.find_keyboard_device()
         if not device:
-            print("Error: No keyboard device found!")
+            logger.server("Error: No keyboard device found!")
             return
 
-        print(f"Using input device: {device.name}")
+        logger.server(f"Using input device: {device.name}")
 
         # Get the trigger key from config
         trigger_key_code = (
@@ -834,7 +928,7 @@ class WhisperRecorder:
             else ecodes.KEY_F2
         )
         key_name = get_key_name(trigger_key_code)
-        print(f"Listening for trigger key: {key_name}")
+        logger.server(f"Listening for trigger key: {key_name}")
 
         try:
             async for event in device.async_read_loop():
@@ -843,8 +937,11 @@ class WhisperRecorder:
                     if event.value == 1:  # Key down (1 = press, 0 = release, 2 = hold)
                         self.toggle_recording()
         except Exception as e:
-            print(f"Error reading events: {e}")
+            logger.server(f"Error reading events: {e}")
 
+
+# Global logger instance
+logger = RichLogger()
 
 # Global recorder instance
 recorder = None
@@ -854,6 +951,8 @@ recorder = None
 @app.route("/")
 def index():
     """Render main page."""
+    if recorder is None:
+        return "Recorder not initialized", 503
     recordings = recorder.get_recordings()
     models = [model.name for model in recorder.available_models]
     current_model = recorder.model_path.name
@@ -865,6 +964,8 @@ def index():
 @app.route("/recordings")
 def recordings_list():
     """Return recordings list as HTML fragment."""
+    if recorder is None:
+        return "Recorder not initialized", 503
     recordings = recorder.get_recordings()
     return render_template("recordings.html", recordings=recordings)
 
@@ -872,6 +973,8 @@ def recordings_list():
 @app.route("/set-model", methods=["POST"])
 def set_model():
     """Change the active model."""
+    if recorder is None:
+        return "Recorder not initialized", 503
     model_name = request.form.get("model")
     if recorder.set_model(model_name):
         return f'<div class="success">Switched to {model_name}</div>'
@@ -899,6 +1002,9 @@ def sse():
 
 def run_hotkey_listener():
     """Run the hotkey listener in event loop."""
+    if recorder is None:
+        logger.server("Error: Recorder not initialized!")
+        return
     asyncio.run(recorder.listen_for_hotkey())
 
 
@@ -927,20 +1033,20 @@ def main():
     config = load_config()
 
     if not config.device:
-        print("No device configured. Running setup...")
+        logger.server("No device configured. Running setup...")
         if not configure_device_and_trigger(config):
-            print("Setup cancelled. Exiting.")
+            logger.server("Setup cancelled. Exiting.")
             return
     elif config.device.trigger_key is None:
-        print("Trigger key not configured. Running trigger key setup...")
+        logger.server("Trigger key not configured. Running trigger key setup...")
         if not configure_device_and_trigger(config, prefer_existing_device=True):
-            print("Trigger key setup cancelled. Exiting.")
+            logger.server("Trigger key setup cancelled. Exiting.")
             return
 
     # Path to whisper-cli binary
     whisper_path = Path(__file__).parent / "bin" / "whisper-cli"
     if not whisper_path.exists():
-        print(f"Error: whisper-cli not found at {whisper_path}")
+        logger.server(f"Error: whisper-cli not found at {whisper_path}")
         return
 
     # Default to tiny model, or use path from command line
@@ -951,12 +1057,12 @@ def main():
     )
 
     if not model_path.exists():
-        print(f"Error: model not found at {model_path}")
-        print("\nAvailable models:")
+        logger.server(f"Error: model not found at {model_path}")
+        logger.server("\nAvailable models:")
         models_dir = Path(__file__).parent / "models"
         for model in sorted(models_dir.glob("ggml-*.bin")):
             if "for-tests" not in model.name:
-                print(f"  {model}")
+                logger.server(f"  {model}")
         return
 
     # Create recordings directory
@@ -972,19 +1078,27 @@ def main():
     )
     trigger_key_name = get_key_name(trigger_key_code)
 
-    print(f"Whisper Hotkey Recorder [{recorder.model_path.name}]")
-    print(f"Press {trigger_key_name} to start/stop recording")
-    print("Web interface: http://localhost:5000\n")
+    logger.server(f"Whisper Hotkey Recorder [{recorder.model_path.name}]")
+    logger.server(f"Press {trigger_key_name} to start/stop recording")
+    logger.server("Web interface: http://localhost:5000\n")
 
-    # Start OpenCode server for transcription cleanup
-    start_opencode_server()
+    # Start live display
+    logger.update_display()
 
-    # Start hotkey listener in background thread
-    listener_thread = threading.Thread(target=run_hotkey_listener, daemon=True)
-    listener_thread.start()
+    with Live(
+        logger.layout, console=logger.console, refresh_per_second=2, screen=False
+    ) as live:
+        logger.live = live  # Set live reference for updates
 
-    # Run Flask app
-    app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
+        # Start OpenCode server for transcription cleanup
+        start_opencode_server()
+
+        # Start hotkey listener in background thread
+        listener_thread = threading.Thread(target=run_hotkey_listener, daemon=True)
+        listener_thread.start()
+
+        # Run Flask app
+        app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
 
 
 if __name__ == "__main__":
