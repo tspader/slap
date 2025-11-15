@@ -1,40 +1,56 @@
 #!/usr/bin/env python3
-import sounddevice as sd
-import numpy as np
-import evdev
-from evdev import ecodes, UInput
+# Standard library imports
+import asyncio
+import atexit
+import json
+import logging
+import os
+import queue
 import subprocess
 import tempfile
-import os
-from pathlib import Path
-from scipy.io import wavfile
-from scipy import signal
-import asyncio
 import threading
-from datetime import datetime
-from flask import Flask, render_template, request, jsonify, Response
-import queue
 import time
-import json
+from collections import deque
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+# Third-party imports
+import evdev
+import numpy as np
+import readchar
 import requests
-import atexit
-from rich.console import Console, Group
-from rich.table import Table
-from rich.panel import Panel
-from rich.text import Text
-from rich.live import Live
-from rich.layout import Layout
+import sounddevice as sd
+from evdev import UInput, ecodes
+from flask import Flask, Response, jsonify, render_template, request
+from pydantic import BaseModel, field_validator
 from rich.align import Align
 from rich.columns import Columns
+from rich.console import Console, Group
+from rich.layout import Layout
+from rich.live import Live
+from rich.panel import Panel
 from rich.rule import Rule
 from rich.spinner import Spinner
-from collections import deque
-from rich.rule import Rule
-from rich.spinner import Spinner
-from collections import deque
-import readchar
-from pydantic import BaseModel, field_validator
-from typing import Optional
+from rich.table import Table
+from rich.text import Text
+from scipy import signal
+from scipy.io import wavfile
+
+
+class RichLogHandler(logging.Handler):
+    """Custom logging handler that sends to RichLogger."""
+
+    def __init__(self, rich_logger):
+        super().__init__()
+        self.rich_logger = rich_logger
+
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            self.rich_logger.server(msg)
+        except Exception:
+            self.handleError(record)
 
 
 class RichLogger:
@@ -47,6 +63,8 @@ class RichLogger:
         self.server_messages = deque(maxlen=50)
         self.layout = Layout()
         self.live = None  # Will be set by main()
+        self.model_name = None  # Will be set by main()
+        self.llm_model = None  # Will be set by main()
         self._setup_layout()
 
     def _setup_layout(self):
@@ -75,8 +93,14 @@ class RichLogger:
 
     def update_display(self):
         """Update the live display."""
+        title = "[bold cyan]slap[/bold cyan]"
+        if self.model_name:
+            title += f" [dim]{self.model_name}[/dim]"
+        if self.llm_model:
+            title += f" [dim]{self.llm_model}[/dim]"
+
         header = Panel(
-            "[bold cyan]slap[/bold cyan]",
+            title,
             border_style="cyan",
         )
 
@@ -139,6 +163,8 @@ class DeviceConfig(BaseModel):
 
 class AppConfig(BaseModel):
     device: Optional[DeviceConfig] = None
+    whisper_model: Optional[str] = None
+    llm_model: Optional[str] = None
 
 
 def get_config_path():
@@ -170,6 +196,48 @@ def save_config(config: AppConfig):
             json.dump(config.model_dump(), f, indent=2)
     except Exception as e:
         logger.server(f"Error saving config: {e}")
+
+
+def get_available_whisper_models():
+    """Get list of available whisper models from models directory."""
+    models_dir = Path(__file__).parent / "models"
+    if not models_dir.exists():
+        return []
+
+    models = [
+        model.name
+        for model in sorted(models_dir.glob("ggml-*.bin"))
+        if "for-tests" not in model.name
+    ]
+    return models
+
+
+def get_available_llm_models():
+    """Get list of available LLM models from opencode."""
+    try:
+        result = subprocess.run(
+            ["opencode", "models"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+
+        if result.returncode != 0:
+            return {}
+
+        # Parse output format: "provider/model"
+        models = {}
+        for line in result.stdout.strip().split("\n"):
+            line = line.strip()
+            if not line or "/" not in line:
+                continue
+            # Format is like: anthropic/claude-haiku-4-5
+            models[line] = line
+
+        return models
+    except Exception as e:
+        logger.server(f"Failed to get LLM models: {e}")
+        return {}
 
 
 def get_key_name(key_code):
@@ -310,6 +378,60 @@ def select_trigger_key(device):
     return None
 
 
+def configure_models(config: AppConfig, available_llm_models: dict):
+    """Ensure the config has whisper and LLM models configured."""
+    console = Console()
+    needs_save = False
+
+    # Check Whisper model
+    whisper_models = get_available_whisper_models()
+    if not whisper_models:
+        console.print("[red]No Whisper models found in models directory![/red]")
+        return False
+
+    # Validate or select whisper model
+    if not config.whisper_model or config.whisper_model not in whisper_models:
+        if config.whisper_model:
+            console.print(
+                f"[yellow]Configured Whisper model '{config.whisper_model}' not found[/yellow]"
+            )
+
+        selected = select_whisper_model(whisper_models)
+        if not selected:
+            console.print("[red]Whisper model selection cancelled[/red]")
+            return False
+
+        config.whisper_model = selected
+        needs_save = True
+
+    # Check LLM model
+    if not available_llm_models:
+        console.print("[red]No LLM models available from OpenCode[/red]")
+        return False
+
+    # Validate or select LLM model
+    if not config.llm_model or config.llm_model not in available_llm_models:
+        if config.llm_model:
+            console.print(
+                f"[yellow]Configured LLM model '{config.llm_model}' not found[/yellow]"
+            )
+
+        selected = select_llm_model(available_llm_models)
+        if not selected:
+            console.print("[red]LLM model selection cancelled[/red]")
+            return False
+
+        config.llm_model = selected
+        needs_save = True
+
+    if needs_save:
+        save_config(config)
+        console.print(f"[green]✓[/green] Whisper model: {config.whisper_model}")
+        console.print(f"[green]✓[/green] LLM model: {config.llm_model}")
+
+    return True
+
+
 def configure_device_and_trigger(
     config: AppConfig, prefer_existing_device: bool = False
 ):
@@ -428,13 +550,24 @@ def stop_opencode_server():
             opencode_process.kill()
 
 
-def clean_transcription(raw_text):
+def clean_transcription(raw_text, llm_model=None):
     """Clean up transcription using OpenCode API."""
     global opencode_session_id
 
     if not opencode_session_id:
         logger.opencode("No OpenCode session, returning raw text")
         return raw_text
+
+    # Default to haiku if no model specified
+    if not llm_model:
+        llm_model = "anthropic/claude-haiku-4-5"
+
+    # Parse provider and model from format "provider/model"
+    if "/" in llm_model:
+        provider_id, model_id = llm_model.split("/", 1)
+    else:
+        provider_id = "anthropic"
+        model_id = llm_model
 
     prompt = f"""Clean this speech-to-text transcription by fixing only transcription errors:
     - Correct mistranscribed technical terms (programming terms, commands, etc.)
@@ -455,7 +588,7 @@ def clean_transcription(raw_text):
             f"{OPENCODE_URL}/session/{opencode_session_id}/message",
             json={
                 "parts": [{"type": "text", "text": prompt}],
-                "model": {"providerID": "anthropic", "modelID": "claude-haiku-4-5"},
+                "model": {"providerID": provider_id, "modelID": model_id},
             },
             timeout=30,
         )
@@ -519,6 +652,140 @@ def get_accessible_keyboard_devices():
             pass
 
     return devices
+
+
+def select_whisper_model(available_models):
+    """Interactive TUI for selecting a Whisper model."""
+    console = Console()
+
+    if not available_models:
+        console.print("[red]No Whisper models found in models directory![/red]")
+        return None
+
+    selected_idx = 0
+
+    def build_display(idx):
+        """Build the display content."""
+        from rich.console import Group
+
+        title = Panel(
+            "[bold cyan]Select Whisper Model[/bold cyan]\n"
+            "Use ↑/↓ or j/k to navigate, Enter to select, q to quit",
+            border_style="cyan",
+        )
+
+        table = Table(show_header=True, header_style="bold magenta", box=None)
+        table.add_column("", width=3)
+        table.add_column("Model", style="cyan")
+
+        for i, model in enumerate(available_models):
+            cursor = "[bold green]→[/bold green]" if i == idx else " "
+            name_style = "bold green" if i == idx else "cyan"
+            table.add_row(cursor, f"[{name_style}]{model}[/{name_style}]")
+
+        return Group(title, "", table)
+
+    with Live(
+        build_display(selected_idx), console=console, refresh_per_second=10
+    ) as live:
+        while True:
+            key = readchar.readkey()
+
+            if key == readchar.key.UP or key == "k":
+                selected_idx = (selected_idx - 1) % len(available_models)
+                live.update(build_display(selected_idx))
+            elif key == readchar.key.DOWN or key == "j":
+                selected_idx = (selected_idx + 1) % len(available_models)
+                live.update(build_display(selected_idx))
+            elif key == readchar.key.ENTER or key == "\r" or key == "\n":
+                selected = available_models[selected_idx]
+                live.stop()
+                console.print(f"[green]✓[/green] Selected: [bold]{selected}[/bold]")
+                return selected
+            elif key == "q" or key == readchar.key.ESC:
+                live.stop()
+                console.print("[yellow]Selection cancelled[/yellow]")
+                return None
+
+
+def select_llm_model(available_models):
+    """Interactive TUI for selecting an LLM model with fuzzy search."""
+    console = Console()
+
+    if not available_models:
+        console.print("[red]No LLM models available![/red]")
+        return None
+
+    model_list = sorted(available_models.keys())
+    filtered_models = model_list.copy()
+    selected_idx = 0
+    search_query = ""
+
+    def build_display(idx, query, filtered):
+        """Build the display content."""
+        from rich.console import Group
+
+        title_text = "[bold cyan]Select LLM Model[/bold cyan]\n"
+        if query:
+            title_text += f"Filter: [yellow]{query}[/yellow] | "
+        title_text += "Type to filter, ↑/↓ to navigate, Enter to select, Esc to quit"
+
+        title = Panel(title_text, border_style="cyan")
+
+        table = Table(show_header=True, header_style="bold magenta", box=None)
+        table.add_column("", width=3)
+        table.add_column("Model", style="cyan")
+
+        display_count = min(15, len(filtered))
+        for i in range(display_count):
+            cursor = "[bold green]→[/bold green]" if i == idx else " "
+            name_style = "bold green" if i == idx else "cyan"
+            table.add_row(cursor, f"[{name_style}]{filtered[i]}[/{name_style}]")
+
+        if len(filtered) > display_count:
+            table.add_row("", f"[dim]...and {len(filtered) - display_count} more[/dim]")
+
+        return Group(title, "", table)
+
+    with Live(
+        build_display(selected_idx, search_query, filtered_models),
+        console=console,
+        refresh_per_second=10,
+    ) as live:
+        while True:
+            key = readchar.readkey()
+
+            if key == "\x1b" or (hasattr(readchar.key, 'ESC') and key == readchar.key.ESC):
+                live.stop()
+                console.print("[yellow]Selection cancelled[/yellow]")
+                return None
+            elif key == readchar.key.UP:
+                selected_idx = max(0, selected_idx - 1)
+                live.update(build_display(selected_idx, search_query, filtered_models))
+            elif key == readchar.key.DOWN:
+                selected_idx = min(len(filtered_models) - 1, selected_idx + 1)
+                live.update(build_display(selected_idx, search_query, filtered_models))
+            elif key == readchar.key.ENTER or key == "\r" or key == "\n":
+                if filtered_models:
+                    selected = filtered_models[selected_idx]
+                    live.stop()
+                    console.print(f"[green]✓[/green] Selected: [bold]{selected}[/bold]")
+                    return selected
+            elif key == readchar.key.BACKSPACE or key == "\x7f":
+                if search_query:
+                    search_query = search_query[:-1]
+                    filtered_models = [
+                        m for m in model_list if search_query.lower() in m.lower()
+                    ]
+                    selected_idx = 0
+                    live.update(build_display(selected_idx, search_query, filtered_models))
+            elif len(key) == 1 and key.isprintable():
+                search_query += key
+                filtered_models = [
+                    m for m in model_list if search_query.lower() in m.lower()
+                ]
+                selected_idx = 0
+                live.update(build_display(selected_idx, search_query, filtered_models))
 
 
 def select_keyboard_device():
@@ -593,7 +860,7 @@ def select_keyboard_device():
 
 
 class WhisperRecorder:
-    def __init__(self, whisper_path, model_path, recordings_dir):
+    def __init__(self, whisper_path, model_path, recordings_dir, llm_model=None):
         self.whisper_path = Path(whisper_path)
         self.model_path = Path(model_path)
         self.recordings_dir = Path(recordings_dir)
@@ -602,6 +869,7 @@ class WhisperRecorder:
         self.audio_data = []
         self.stream = None
         self.available_models = []
+        self.llm_model = llm_model or "anthropic/claude-haiku-4-5"
 
         # Get device's native sample rate and set whisper target
         device_info = sd.query_devices(kind="input")
@@ -743,7 +1011,7 @@ class WhisperRecorder:
     def _save_transcription(self, raw_text):
         """Save transcription to timestamped file and notify SSE clients."""
         # Clean up the transcription using OpenCode
-        cleaned_text = clean_transcription(raw_text)
+        cleaned_text = clean_transcription(raw_text, self.llm_model)
 
         timestamp = datetime.now().isoformat().replace(":", "-").replace(".", "-")
         filename = f"{timestamp}.txt"
@@ -848,6 +1116,7 @@ class WhisperRecorder:
         model_path = Path(__file__).parent / "models" / model_name
         if model_path.exists():
             self.model_path = model_path
+            logger.model_name = model_name
             logger.server(f"Switched to model: {model_name}")
             return True
         return False
@@ -1031,47 +1300,56 @@ def main():
     global recorder
     import sys
 
+    console = Console()
+
     # Load config and ensure setup is complete
     config = load_config()
 
     if not config.device:
-        logger.server("No device configured. Running setup...")
+        console.print("No device configured. Running setup...")
         if not configure_device_and_trigger(config):
-            logger.server("Setup cancelled. Exiting.")
+            console.print("Setup cancelled. Exiting.")
             return
     elif config.device.trigger_key is None:
-        logger.server("Trigger key not configured. Running trigger key setup...")
+        console.print("Trigger key not configured. Running trigger key setup...")
         if not configure_device_and_trigger(config, prefer_existing_device=True):
-            logger.server("Trigger key setup cancelled. Exiting.")
+            console.print("Trigger key setup cancelled. Exiting.")
             return
+
+    # Get available LLM models once at startup
+    console.print("[dim]Loading available LLM models...[/dim]")
+    available_llm_models = get_available_llm_models()
+
+    # Configure models if needed
+    if not configure_models(config, available_llm_models):
+        console.print("[red]Model configuration failed. Exiting.[/red]")
+        return
 
     # Path to whisper-cli binary
     whisper_path = Path(__file__).parent / "bin" / "whisper-cli"
     if not whisper_path.exists():
-        logger.server(f"Error: whisper-cli not found at {whisper_path}")
+        console.print(f"[red]Error: whisper-cli not found at {whisper_path}[/red]")
         return
 
-    # Default to tiny model, or use path from command line
-    model_path = (
-        Path(sys.argv[1])
-        if len(sys.argv) > 1
-        else Path(__file__).parent / "models" / "ggml-tiny.bin"
-    )
+    # Get whisper model path from config
+    model_path = Path(__file__).parent / "models" / config.whisper_model
 
     if not model_path.exists():
-        logger.server(f"Error: model not found at {model_path}")
-        logger.server("\nAvailable models:")
+        console.print(f"[red]Error: model not found at {model_path}[/red]")
+        console.print("\n[yellow]Available models:[/yellow]")
         models_dir = Path(__file__).parent / "models"
         for model in sorted(models_dir.glob("ggml-*.bin")):
             if "for-tests" not in model.name:
-                logger.server(f"  {model}")
+                console.print(f"  {model}")
         return
 
     # Create recordings directory
     recordings_dir = Path(__file__).parent / "recordings"
 
-    # Initialize recorder
-    recorder = WhisperRecorder(whisper_path, model_path, recordings_dir)
+    # Initialize recorder with configured LLM model
+    recorder = WhisperRecorder(
+        whisper_path, model_path, recordings_dir, llm_model=config.llm_model
+    )
 
     trigger_key_code = (
         config.device.trigger_key
@@ -1080,9 +1358,11 @@ def main():
     )
     trigger_key_name = get_key_name(trigger_key_code)
 
+    logger.model_name = recorder.model_path.name
+    logger.llm_model = config.llm_model.split("/")[1] if "/" in config.llm_model else config.llm_model
     logger.server(f"Whisper Hotkey Recorder [{recorder.model_path.name}]")
     logger.server(f"Press {trigger_key_name} to start/stop recording")
-    logger.server("Web interface: http://localhost:5000\n")
+    logger.server("Web interface: http://127.0.0.1:5000\n")
 
     # Start live display
     logger.update_display()
@@ -1092,15 +1372,31 @@ def main():
     ) as live:
         logger.live = live  # Set live reference for updates
 
-        # Start OpenCode server for transcription cleanup
-        start_opencode_server()
+        # Configure Flask logging to use RichLogger
+        flask_handler = RichLogHandler(logger)
+        flask_handler.setFormatter(logging.Formatter('%(message)s'))
+
+        # Configure Flask app logger
+        app.logger.handlers.clear()
+        app.logger.addHandler(flask_handler)
+        app.logger.setLevel(logging.INFO)
+
+        # Configure Werkzeug (Flask development server) logger
+        werkzeug_logger = logging.getLogger('werkzeug')
+        werkzeug_logger.handlers.clear()
+        werkzeug_logger.addHandler(flask_handler)
+        werkzeug_logger.setLevel(logging.INFO)
+
+        # Start OpenCode server in background (doesn't block)
+        opencode_thread = threading.Thread(target=start_opencode_server, daemon=True)
+        opencode_thread.start()
 
         # Start hotkey listener in background thread
         listener_thread = threading.Thread(target=run_hotkey_listener, daemon=True)
         listener_thread.start()
 
-        # Run Flask app
-        app.run(host="0.0.0.0", port=5000, debug=False, threaded=True)
+        # Run Flask app (use 127.0.0.1 to avoid DNS timeout on 0.0.0.0)
+        app.run(host="127.0.0.1", port=5000, debug=False, threaded=True, use_reloader=False)
 
 
 if __name__ == "__main__":
