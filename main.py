@@ -18,6 +18,13 @@ import time
 import json
 import requests
 import atexit
+from rich.console import Console
+from rich.table import Table
+from rich.panel import Panel
+from rich.text import Text
+from rich.live import Live
+from rich.layout import Layout
+import readchar
 
 # SSE message queue
 sse_queue = queue.Queue()
@@ -139,6 +146,103 @@ Cleaned transcription:"""
 
 # Register cleanup handler
 atexit.register(stop_opencode_server)
+
+def select_keyboard_device():
+    """Interactive TUI for selecting a keyboard device."""
+    console = Console()
+
+    # Get all input devices
+    device_paths = evdev.list_devices()
+
+    if not device_paths:
+        console.print("[red]No input devices accessible![/red]")
+        console.print("\nYou need to either:")
+        console.print("1. Add yourself to the 'input' group:")
+        console.print("   sudo usermod -a -G input $USER")
+        console.print("   (then log out and log back in)")
+        console.print("2. Or run with sudo:")
+        console.print("   sudo uv run main.py")
+        return None
+
+    # Load devices and deduplicate by (name, phys)
+    devices = []
+    seen = set()
+
+    for path in device_paths:
+        try:
+            device = evdev.InputDevice(path)
+            caps = device.capabilities(verbose=False)
+
+            # Only include devices with keyboard capabilities
+            if ecodes.EV_KEY in caps:
+                # Create a unique key for deduplication
+                unique_key = (device.name, device.phys)
+                if unique_key not in seen:
+                    seen.add(unique_key)
+                    devices.append(device)
+        except Exception as e:
+            pass
+
+    if not devices:
+        console.print("[red]No keyboard devices found![/red]")
+        return None
+
+    # Sort devices by name for consistent ordering
+    devices.sort(key=lambda d: d.name)
+
+    selected_idx = 0
+
+    def build_display(idx):
+        """Build the display content."""
+        from rich.console import Group
+
+        # Create title panel
+        title = Panel(
+            "[bold cyan]Select Keyboard Device[/bold cyan]\n"
+            "Use ↑/↓ or j/k to navigate, Enter to select, q to quit",
+            border_style="cyan"
+        )
+
+        # Create device list table
+        table = Table(show_header=True, header_style="bold magenta", box=None)
+        table.add_column("", width=3)
+        table.add_column("Name", style="cyan")
+        table.add_column("Path", style="dim")
+        table.add_column("Physical Location", style="dim")
+
+        for i, device in enumerate(devices):
+            cursor = "[bold green]→[/bold green]" if i == idx else " "
+            name_style = "bold green" if i == idx else "cyan"
+            table.add_row(
+                cursor,
+                f"[{name_style}]{device.name}[/{name_style}]",
+                device.path,
+                device.phys or "N/A"
+            )
+
+        return Group(title, "", table)
+
+    with Live(build_display(selected_idx), console=console, refresh_per_second=10) as live:
+        while True:
+            # Read keyboard input
+            key = readchar.readkey()
+
+            # Handle navigation
+            if key == readchar.key.UP or key == 'k':
+                selected_idx = (selected_idx - 1) % len(devices)
+                live.update(build_display(selected_idx))
+            elif key == readchar.key.DOWN or key == 'j':
+                selected_idx = (selected_idx + 1) % len(devices)
+                live.update(build_display(selected_idx))
+            elif key == readchar.key.ENTER or key == '\r' or key == '\n':
+                selected = devices[selected_idx]
+                live.stop()
+                console.print(f"[green]✓[/green] Selected: [bold]{selected.name}[/bold] ({selected.path})")
+                return selected
+            elif key == 'q' or key == readchar.key.ESC:
+                live.stop()
+                console.print("[yellow]Selection cancelled[/yellow]")
+                return None
 
 class WhisperRecorder:
     def __init__(self, whisper_path, model_path, recordings_dir):
@@ -493,6 +597,21 @@ def run_hotkey_listener():
     """Run the F2 hotkey listener in event loop."""
     asyncio.run(recorder.listen_for_hotkey())
 
+def dev_select_device():
+    """Dev entry point to test device selector."""
+    from rich.console import Console
+    console = Console()
+
+    console.print("[bold cyan]Device Selector Test[/bold cyan]\n")
+    device = select_keyboard_device()
+
+    if device:
+        console.print(f"\n[green]Successfully selected:[/green] {device.name}")
+        console.print(f"[dim]Path:[/dim] {device.path}")
+        console.print(f"[dim]Physical:[/dim] {device.phys or 'N/A'}")
+    else:
+        console.print("[yellow]No device selected[/yellow]")
+
 def main():
     global recorder
     import sys
@@ -537,4 +656,8 @@ def main():
     app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
 
 if __name__ == "__main__":
-    main()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "dev":
+        dev_select_device()
+    else:
+        main()
