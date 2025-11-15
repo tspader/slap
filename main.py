@@ -25,7 +25,7 @@ from rich.text import Text
 from rich.live import Live
 from rich.layout import Layout
 import readchar
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Optional
 
 
@@ -33,6 +33,21 @@ class DeviceConfig(BaseModel):
     name: str
     path: str
     phys: Optional[str] = None
+    trigger_key: Optional[int] = None
+
+    @field_validator("trigger_key", mode="before")
+    @classmethod
+    def normalize_trigger_key(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, str):
+            if value.startswith("KEY_"):
+                return getattr(ecodes, value, ecodes.KEY_F2)
+            try:
+                return int(value)
+            except ValueError:
+                return ecodes.KEY_F2
+        return value
 
 
 class AppConfig(BaseModel):
@@ -68,6 +83,195 @@ def save_config(config: AppConfig):
             json.dump(config.model_dump(), f, indent=2)
     except Exception as e:
         print(f"Error saving config: {e}")
+
+
+def get_key_name(key_code):
+    """Get human-readable name for key code."""
+    key_names = {
+        ecodes.KEY_F1: "F1",
+        ecodes.KEY_F2: "F2",
+        ecodes.KEY_F3: "F3",
+        ecodes.KEY_F4: "F4",
+        ecodes.KEY_F5: "F5",
+        ecodes.KEY_F6: "F6",
+        ecodes.KEY_F7: "F7",
+        ecodes.KEY_F8: "F8",
+        ecodes.KEY_F9: "F9",
+        ecodes.KEY_F10: "F10",
+        ecodes.KEY_F11: "F11",
+        ecodes.KEY_F12: "F12",
+        ecodes.KEY_A: "A",
+        ecodes.KEY_B: "B",
+        ecodes.KEY_C: "C",
+        ecodes.KEY_D: "D",
+        ecodes.KEY_E: "E",
+        ecodes.KEY_F: "F",
+        ecodes.KEY_G: "G",
+        ecodes.KEY_H: "H",
+        ecodes.KEY_I: "I",
+        ecodes.KEY_J: "J",
+        ecodes.KEY_K: "K",
+        ecodes.KEY_L: "L",
+        ecodes.KEY_M: "M",
+        ecodes.KEY_N: "N",
+        ecodes.KEY_O: "O",
+        ecodes.KEY_P: "P",
+        ecodes.KEY_Q: "Q",
+        ecodes.KEY_R: "R",
+        ecodes.KEY_S: "S",
+        ecodes.KEY_T: "T",
+        ecodes.KEY_U: "U",
+        ecodes.KEY_V: "V",
+        ecodes.KEY_W: "W",
+        ecodes.KEY_X: "X",
+        ecodes.KEY_Y: "Y",
+        ecodes.KEY_Z: "Z",
+        ecodes.KEY_1: "1",
+        ecodes.KEY_2: "2",
+        ecodes.KEY_3: "3",
+        ecodes.KEY_4: "4",
+        ecodes.KEY_5: "5",
+        ecodes.KEY_6: "6",
+        ecodes.KEY_7: "7",
+        ecodes.KEY_8: "8",
+        ecodes.KEY_9: "9",
+        ecodes.KEY_0: "0",
+        ecodes.KEY_SPACE: "Space",
+        ecodes.KEY_ENTER: "Enter",
+        ecodes.KEY_ESC: "Escape",
+        ecodes.KEY_TAB: "Tab",
+        ecodes.KEY_BACKSPACE: "Backspace",
+        ecodes.KEY_LEFTCTRL: "Left Ctrl",
+        ecodes.KEY_RIGHTCTRL: "Right Ctrl",
+        ecodes.KEY_LEFTALT: "Left Alt",
+        ecodes.KEY_RIGHTALT: "Right Alt",
+        ecodes.KEY_LEFTSHIFT: "Left Shift",
+        ecodes.KEY_RIGHTSHIFT: "Right Shift",
+        ecodes.KEY_LEFTMETA: "Left Meta",
+        ecodes.KEY_RIGHTMETA: "Right Meta",
+    }
+    return key_names.get(key_code, f"Key_{key_code}")
+
+
+def select_trigger_key(device):
+    """Interactive TUI for selecting trigger key."""
+    console = Console()
+    last_key_code = None
+    confirmed_key = None
+    error_message = None
+
+    def build_display():
+        """Build the display content."""
+        from rich.console import Group
+
+        title = Panel(
+            "[bold cyan]Select Trigger Key[/bold cyan]\n"
+            "Press keys to preview, Enter to confirm, Esc to cancel",
+            border_style="cyan",
+        )
+
+        if last_key_code is not None:
+            key_name = get_key_name(last_key_code)
+            status = Panel(
+                f"[bold green]Selected:[/bold green] {key_name} ({last_key_code})\n"
+                "Press Enter to confirm or another key to change",
+                border_style="green",
+            )
+        else:
+            status = Panel(
+                "[dim]Press any key to select it as the trigger...[/dim]",
+                border_style="dim",
+            )
+
+        return Group(title, "", status)
+
+    with Live(build_display(), console=console, refresh_per_second=10) as live:
+        try:
+            for event in device.read_loop():
+                if event.type != ecodes.EV_KEY or event.value != 1:
+                    continue
+
+                key_code = event.code
+
+                if key_code == ecodes.KEY_ESC:
+                    break
+
+                if key_code in (ecodes.KEY_ENTER, ecodes.KEY_KPENTER):
+                    if last_key_code is not None:
+                        confirmed_key = last_key_code
+                        break
+                    else:
+                        continue
+
+                last_key_code = key_code
+                live.update(build_display())
+        except KeyboardInterrupt:
+            pass
+        except Exception as e:
+            error_message = str(e)
+
+    if confirmed_key is not None:
+        key_name = get_key_name(confirmed_key)
+        console.print(f"[green]✓[/green] Selected trigger key: [bold]{key_name}[/bold]")
+        return confirmed_key
+
+    if error_message:
+        console.print(f"[red]Error reading keys: {error_message}[/red]")
+    else:
+        console.print("[yellow]Key selection cancelled[/yellow]")
+
+    return None
+
+
+def configure_device_and_trigger(
+    config: AppConfig, prefer_existing_device: bool = False
+):
+    """Ensure the config has a device and trigger key."""
+    device = None
+
+    if prefer_existing_device and config.device:
+        try:
+            device = evdev.InputDevice(config.device.path)
+            print(f"Using configured device: {config.device.name}")
+        except Exception as e:
+            print(f"Could not access configured device at {config.device.path}: {e}")
+            device = None
+
+    if device is None:
+        device = select_keyboard_device()
+        if not device:
+            print("Device selection cancelled.")
+            return False
+
+    device_info = {
+        "name": device.name,
+        "path": device.path,
+        "phys": device.phys,
+    }
+
+    try:
+        trigger_key = select_trigger_key(device)
+    finally:
+        try:
+            device.close()
+        except Exception:
+            pass
+
+    if trigger_key is None:
+        print("Trigger key selection cancelled.")
+        return False
+
+    config.device = DeviceConfig(
+        name=device_info["name"],
+        path=device_info["path"],
+        phys=device_info["phys"],
+        trigger_key=trigger_key,
+    )
+    save_config(config)
+    key_name = get_key_name(trigger_key)
+    print(f"Device saved to config: {device.name}")
+    print(f"Trigger key saved: {key_name}")
+    return True
 
 
 # SSE message queue
@@ -327,7 +531,7 @@ class WhisperRecorder:
         if self.is_recording:
             return
 
-        print("Recording started... (Press F2 to stop)")
+        print("Recording started... (press hotkey to stop)")
         self.is_recording = True
         self.audio_data = []
 
@@ -622,7 +826,8 @@ class WhisperRecorder:
         return None
 
     async def listen_for_hotkey(self):
-        """Async loop to listen for F2 key press."""
+        """Async loop to listen for trigger key press."""
+        config = load_config()
         device = self.find_keyboard_device()
         if not device:
             print("Error: No keyboard device found!")
@@ -630,10 +835,19 @@ class WhisperRecorder:
 
         print(f"Using input device: {device.name}")
 
+        # Get the trigger key from config
+        trigger_key_code = (
+            config.device.trigger_key
+            if config.device and config.device.trigger_key is not None
+            else ecodes.KEY_F2
+        )
+        key_name = get_key_name(trigger_key_code)
+        print(f"Listening for trigger key: {key_name}")
+
         try:
             async for event in device.async_read_loop():
-                # Check for F2 key press (key down event)
-                if event.type == ecodes.EV_KEY and event.code == ecodes.KEY_F2:
+                # Check for trigger key press (key down event)
+                if event.type == ecodes.EV_KEY and event.code == trigger_key_code:
                     if event.value == 1:  # Key down (1 = press, 0 = release, 2 = hold)
                         self.toggle_recording()
         except Exception as e:
@@ -692,7 +906,7 @@ def sse():
 
 
 def run_hotkey_listener():
-    """Run the F2 hotkey listener in event loop."""
+    """Run the hotkey listener in event loop."""
     asyncio.run(recorder.listen_for_hotkey())
 
 
@@ -717,19 +931,18 @@ def main():
     global recorder
     import sys
 
-    # Load config and check if setup is needed
+    # Load config and ensure setup is complete
     config = load_config()
+
     if not config.device:
         print("No device configured. Running setup...")
-        device = select_keyboard_device()
-        if device:
-            config.device = DeviceConfig(
-                name=device.name, path=device.path, phys=device.phys
-            )
-            save_config(config)
-            print(f"Device saved to config: {device.name}")
-        else:
+        if not configure_device_and_trigger(config):
             print("Setup cancelled. Exiting.")
+            return
+    elif config.device.trigger_key is None:
+        print("Trigger key not configured. Running trigger key setup...")
+        if not configure_device_and_trigger(config, prefer_existing_device=True):
+            print("Trigger key setup cancelled. Exiting.")
             return
 
     # Path to whisper-cli binary
@@ -760,14 +973,21 @@ def main():
     # Initialize recorder
     recorder = WhisperRecorder(whisper_path, model_path, recordings_dir)
 
+    trigger_key_code = (
+        config.device.trigger_key
+        if config.device and config.device.trigger_key is not None
+        else ecodes.KEY_F2
+    )
+    trigger_key_name = get_key_name(trigger_key_code)
+
     print(f"Whisper Hotkey Recorder [{recorder.model_path.name}]")
-    print("Press F2 to start/stop recording")
+    print(f"Press {trigger_key_name} to start/stop recording")
     print("Web interface: http://localhost:5000\n")
 
     # Start OpenCode server for transcription cleanup
     start_opencode_server()
 
-    # Start F2 listener in background thread
+    # Start hotkey listener in background thread
     listener_thread = threading.Thread(target=run_hotkey_listener, daemon=True)
     listener_thread.start()
 
