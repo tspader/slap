@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Whisper Recorder</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.10/dist/ext/sse.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: #0f0f0f;
+            color: #e0e0e0;
+            padding: 20px;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        header {
+            margin-bottom: 30px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #333;
+        }
+
+        h1 {
+            color: #fff;
+            margin-bottom: 10px;
+        }
+
+        .controls {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: #1a1a1a;
+            border-radius: 8px;
+            border: 1px solid #333;
+        }
+
+        .model-selector {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        label {
+            color: #aaa;
+            font-weight: 500;
+        }
+
+        select {
+            padding: 8px 12px;
+            background: #2a2a2a;
+            color: #e0e0e0;
+            border: 1px solid #444;
+            border-radius: 4px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+
+        select:hover {
+            border-color: #666;
+        }
+
+        select:focus {
+            outline: none;
+            border-color: #888;
+        }
+
+        #status {
+            margin-left: auto;
+            padding: 8px 16px;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        .success {
+            background: #1a4d2e;
+            color: #4ade80;
+            border: 1px solid #4ade80;
+        }
+
+        .error {
+            background: #4d1a1a;
+            color: #f87171;
+            border: 1px solid #f87171;
+        }
+
+        .recordings {
+            display: grid;
+            gap: 15px;
+        }
+
+        .recording {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 20px;
+            transition: all 0.2s;
+            cursor: pointer;
+        }
+
+        .recording:hover {
+            border-color: #555;
+            transform: translateY(-2px);
+        }
+
+        .recording.copied {
+            border-color: #4ade80;
+            background: #1a2e1a;
+        }
+
+        .recording-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid #2a2a2a;
+        }
+
+        .timestamp {
+            font-size: 12px;
+            color: #888;
+            font-family: 'Courier New', monospace;
+        }
+
+        .filename {
+            font-size: 11px;
+            color: #666;
+        }
+
+        .text {
+            color: #e0e0e0;
+            font-size: 15px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .empty {
+            text-align: center;
+            padding: 60px 20px;
+            color: #666;
+        }
+
+        .empty::before {
+            content: "🎤";
+            display: block;
+            font-size: 48px;
+            margin-bottom: 20px;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .recording.new {
+            animation: slideIn 0.3s ease-out;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Whisper Recorder</h1>
+            <p style="color: #888;">Press F2 to start/stop recording</p>
+        </header>
+
+        <div class="controls">
+            <div class="model-selector">
+                <label for="model">Model:</label>
+                <select name="model" id="model"
+                        hx-post="/set-model"
+                        hx-target="#status"
+                        hx-swap="innerHTML">
+                    {% for model in models %}
+                    <option value="{{ model }}" {% if model == current_model %}selected{% endif %}>
+                        {{ model }}
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div id="status"></div>
+        </div>
+
+        <div id="recordings-container"
+             hx-ext="sse"
+             sse-connect="/sse"
+             sse-swap="recording"
+             hx-swap="beforeend"
+             hx-target="#recordings-list">
+
+            <div id="recordings-list" class="recordings">
+                {% if recordings %}
+                    {% for recording in recordings %}
+                    <div class="recording" data-text="{{ recording.text }}" onclick="copyToClipboard(this)">
+                        <div class="recording-header">
+                            <span class="timestamp">{{ recording.timestamp }}</span>
+                            <span class="filename">{{ recording.filename }}</span>
+                        </div>
+                        <div class="text">{{ recording.text }}</div>
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <div class="empty">
+                        <div>No recordings yet</div>
+                        <div style="margin-top: 10px; font-size: 14px;">Press F2 to create your first recording</div>
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Copy to clipboard function
+        function copyToClipboard(element) {
+            const text = element.getAttribute('data-text');
+            navigator.clipboard.writeText(text).then(function() {
+                // Visual feedback
+                element.classList.add('copied');
+                setTimeout(function() {
+                    element.classList.remove('copied');
+                }, 500);
+            }).catch(function(err) {
+                console.error('Failed to copy:', err);
+            });
+        }
+
+        // Handle SSE events
+        document.body.addEventListener('htmx:sseMessage', function(event) {
+            const rec = JSON.parse(event.detail.data);
+
+            console.log('SSE received:', rec);
+
+            // Remove empty message if exists
+            const empty = document.querySelector('.empty');
+            if (empty) {
+                empty.remove();
+            }
+
+            // Create new recording element
+            const div = document.createElement('div');
+            div.className = 'recording new';
+            div.setAttribute('data-text', rec.text);
+            div.setAttribute('onclick', 'copyToClipboard(this)');
+            div.innerHTML = `
+                <div class="recording-header">
+                    <span class="timestamp">${rec.timestamp}</span>
+                    <span class="filename">${rec.filename}</span>
+                </div>
+                <div class="text">${rec.text}</div>
+            `;
+
+            // Insert at the beginning
+            const list = document.getElementById('recordings-list');
+            list.insertBefore(div, list.firstChild);
+        });
+    </script>
+</body>
+</html>

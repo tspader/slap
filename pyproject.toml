@@ -1,0 +1,14 @@
+[project]
+name = "whisper-hotkey"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "evdev>=1.9.2",
+    "flask>=3.0.0",
+    "numpy>=2.3.4",
+    "requests>=2.31.0",
+    "scipy>=1.16.3",
+    "sounddevice>=0.5.3",
+]

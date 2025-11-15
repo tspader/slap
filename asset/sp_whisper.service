@@ -1,0 +1,21 @@
+[Unit]
+Description=Whisper Hotkey Recorder with Web Interface
+After=graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/sp/whisper
+ExecStart=/usr/bin/env uv run main.py
+Restart=on-failure
+RestartSec=5
+
+# Environment for clipboard access
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+Environment=WAYLAND_DISPLAY=wayland-0
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,16 @@
+{% if recordings %}
+    {% for recording in recordings %}
+    <div class="recording">
+        <div class="recording-header">
+            <span class="timestamp">{{ recording.timestamp }}</span>
+            <span class="filename">{{ recording.filename }}</span>
+        </div>
+        <div class="text">{{ recording.text }}</div>
+    </div>
+    {% endfor %}
+{% else %}
+    <div class="empty">
+        <div>No recordings yet</div>
+        <div style="margin-top: 10px; font-size: 14px;">Press F2 to create your first recording</div>
+    </div>
+{% endif %}
