@@ -76,15 +76,15 @@ class RichLogger:
     def update_display(self):
         """Update the live display."""
         header = Panel(
-            "[bold cyan]Whisper Hotkey Recorder[/bold cyan] - Real-time Logs",
+            "[bold cyan]slap[/bold cyan]",
             border_style="cyan",
         )
 
-        opencode_panel = self._create_panel(self.opencode_messages, "OpenCode", "green")
+        opencode_panel = self._create_panel(self.opencode_messages, "opencode", "green")
         transcription_panel = self._create_panel(
-            self.transcription_messages, "Transcription", "blue"
+            self.transcription_messages, "whisper", "blue"
         )
-        server_panel = self._create_panel(self.server_messages, "Server", "yellow")
+        server_panel = self._create_panel(self.server_messages, "server", "yellow")
 
         self.layout["header"].update(header)
         self.layout["opencode"].update(opencode_panel)
@@ -436,17 +436,19 @@ def clean_transcription(raw_text):
         logger.opencode("No OpenCode session, returning raw text")
         return raw_text
 
-    prompt = f"""Clean up this raw speech-to-text transcription. ONLY output the cleaned text with no additional commentary.
+    prompt = f"""Clean this speech-to-text transcription by fixing only transcription errors:
+    - Correct mistranscribed technical terms (programming terms, commands, etc.)
+    - Add appropriate punctuation
+    - Fix awkward phrasing from spoken language
+    - Preserve profanity and semantic meaning
 
-The transcription may have:
-- Mistranscribed technical terms (programming terms, command names, etc.)
-- Missing punctuation
-- Awkward phrasing from spoken language
+    Output ONLY the cleaned text, nothing else.
 
-Raw transcription:
-{raw_text}
+    Exception: If the transcription contains "Achilles", treat text between "Achilles" and "Tortoise" as meta-instructions. Clean those instructions for transcription errors first, then apply them while removing the markers and instructions from the output.
 
-Cleaned transcription:"""
+    Raw transcription, inside single quotes:
+    '{raw_text}'
+    """
 
     try:
         response = requests.post(
