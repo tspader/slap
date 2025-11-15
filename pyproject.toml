@@ -15,3 +15,6 @@ dependencies = [
     "scipy>=1.16.3",
     "sounddevice>=0.5.3",
 ]
+
+[project.scripts]
+slap = "main:main"

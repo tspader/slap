@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import queue
+import re
 import subprocess
 import tempfile
 import threading
@@ -43,7 +44,12 @@ class RichLogHandler(logging.Handler):
     def emit(self, record):
         try:
             msg = self.format(record)
-            self.rich_logger.server(msg)
+            # Strip ANSI color codes
+            msg = re.sub(r'\x1b\[[0-9;]*m', '', msg)
+            # Split multi-line messages and send each line separately
+            for line in msg.splitlines():
+                if line.strip():
+                    self.rich_logger.server(line)
         except Exception:
             self.handleError(record)
 
