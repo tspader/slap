@@ -584,12 +584,21 @@ def clean_transcription(raw_text, llm_model=None):
     """
 
     try:
+        data = {
+            "parts": [{
+                "type": "text",
+                "text": prompt
+            }],
+            "model": {
+                "providerID": provider_id,
+                "modelID": model_id
+            },
+        }
+        print(data)
+
         response = requests.post(
             f"{OPENCODE_URL}/session/{opencode_session_id}/message",
-            json={
-                "parts": [{"type": "text", "text": prompt}],
-                "model": {"providerID": provider_id, "modelID": model_id},
-            },
+            json=data,
             timeout=30,
         )
 
@@ -1026,6 +1035,9 @@ class WhisperRecorder:
         # Copy to clipboard
         self._copy_to_clipboard(cleaned_text)
 
+        # Show system notification and play sound
+        self._notify_transcription_ready(cleaned_text)
+
         # Notify SSE clients
         sse_queue.put(
             {"filename": filename, "text": cleaned_text, "timestamp": timestamp}
@@ -1096,6 +1108,44 @@ class WhisperRecorder:
                 logger.transcription(f"Failed to copy to clipboard: {e.stderr.strip()}")
             except FileNotFoundError:
                 logger.transcription("wl-copy not found. Install wl-clipboard package.")
+
+    def _notify_transcription_ready(self, text):
+        """Show system notification and play sound for completed transcription."""
+        # Show notification using notify-send
+        try:
+            # Truncate text for notification (first 100 chars)
+            notification_text = text[:100].replace("'", "'\\''")
+            subprocess.run(
+                [
+                    "notify-send",
+                    "--urgency=normal",
+                    "--app-name=slap",
+                    "Transcription Ready",
+                    notification_text,
+                ],
+                capture_output=True,
+                timeout=5,
+            )
+        except Exception as e:
+            logger.transcription(f"Failed to send notification: {e}")
+
+        # Play notification sound
+        try:
+            sound_file = Path(__file__).parent / "assets" / "audio" / "ghost.wav"
+            if sound_file.exists():
+                subprocess.run(
+                    ["paplay", str(sound_file)],
+                    capture_output=True,
+                    timeout=5,
+                )
+            else:
+                logger.transcription(f"Sound file not found: {sound_file}")
+        except FileNotFoundError:
+            logger.transcription("paplay not found. Install pulseaudio-utils package.")
+        except subprocess.TimeoutExpired:
+            logger.transcription("Sound playback timed out")
+        except Exception as e:
+            logger.transcription(f"Failed to play sound: {e}")
 
     def get_recordings(self):
         """Get list of recordings sorted by timestamp (newest first)."""
