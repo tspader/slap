@@ -8,6 +8,7 @@ import os
 import queue
 import re
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -17,11 +18,12 @@ from pathlib import Path
 from typing import Optional
 
 # Third-party imports
+import click
+
+# Third-party imports
 import evdev
-import numpy as np
 import readchar
 import requests
-import sounddevice as sd
 from evdev import ecodes
 from flask import Flask, Response, render_template, request
 from pydantic import BaseModel, field_validator
@@ -30,8 +32,6 @@ from rich.layout import Layout
 from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
-from scipy import signal
-from scipy.io import wavfile
 
 
 class RichLogHandler(logging.Handler):
@@ -45,7 +45,7 @@ class RichLogHandler(logging.Handler):
         try:
             msg = self.format(record)
             # Strip ANSI color codes
-            msg = re.sub(r'\x1b\[[0-9;]*m', '', msg)
+            msg = re.sub(r"\x1b\[[0-9;]*m", "", msg)
             # Split multi-line messages and send each line separately
             for line in msg.splitlines():
                 if line.strip():
@@ -63,9 +63,9 @@ class RichLogger:
         self.transcription_messages = deque(maxlen=50)
         self.server_messages = deque(maxlen=50)
         self.layout = Layout()
-        self.live = None  # Will be set by main()
-        self.model_name = None  # Will be set by main()
-        self.llm_model = None  # Will be set by main()
+        self.live: Optional[Live] = None  # Will be set by main()
+        self.model_name: Optional[str] = None  # Will be set by main()
+        self.llm_model: Optional[str] = None  # Will be set by main()
         self._setup_layout()
 
     def _setup_layout(self):
@@ -502,7 +502,7 @@ def start_opencode_server():
     """Start the opencode server in the background."""
     global opencode_process, opencode_session_id
 
-    logger.server("Starting OpenCode server...")
+    logger.opencode("Starting OpenCode server...")
     opencode_process = subprocess.Popen(
         ["opencode", "serve", "--port", str(OPENCODE_PORT)],
         stdout=subprocess.DEVNULL,
@@ -515,12 +515,12 @@ def start_opencode_server():
         try:
             # Try to connect to the server (any endpoint will do)
             response = requests.get(f"{OPENCODE_URL}/", timeout=1)
-            logger.server("OpenCode server started!")
+            logger.opencode("OpenCode server started!")
             break
         except (requests.ConnectionError, requests.Timeout):
             time.sleep(0.5)
     else:
-        logger.server("Warning: OpenCode server may not be ready")
+        logger.opencode("Warning: OpenCode server may not be ready")
 
     # Create a session
     try:
@@ -531,18 +531,18 @@ def start_opencode_server():
         )
         if response.status_code == 200:
             opencode_session_id = response.json().get("id")
-            logger.server(f"Created OpenCode session: {opencode_session_id}")
+            logger.opencode(f"Created OpenCode session: {opencode_session_id}")
         else:
-            logger.server(f"Failed to create session: {response.status_code}")
+            logger.opencode(f"Failed to create session: {response.status_code}")
     except Exception as e:
-        logger.server(f"Error creating session: {e}")
+        logger.opencode(f"Error creating session: {e}")
 
 
 def stop_opencode_server():
     """Stop the opencode server."""
     global opencode_process
     if opencode_process:
-        logger.server("Stopping OpenCode server...")
+        logger.opencode("Stopping OpenCode server...")
         opencode_process.terminate()
         try:
             opencode_process.wait(timeout=5)
@@ -585,14 +585,8 @@ def clean_transcription(raw_text, llm_model=None):
 
     try:
         data = {
-            "parts": [{
-                "type": "text",
-                "text": prompt
-            }],
-            "model": {
-                "providerID": provider_id,
-                "modelID": model_id
-            },
+            "parts": [{"type": "text", "text": prompt}],
+            "model": {"providerID": provider_id, "modelID": model_id},
         }
         print(data)
 
@@ -869,8 +863,19 @@ def select_keyboard_device():
                 return None
 
 
+def import_heavy_libraries():
+    """Import heavy scientific computing libraries on demand."""
+    global np, sd, signal, wavfile
+    import numpy as np
+    import sounddevice as sd
+    from scipy import signal
+    from scipy.io import wavfile
+
+
 class WhisperRecorder:
     def __init__(self, whisper_path, model_path, recordings_dir, llm_model=None):
+        import_heavy_libraries()
+
         self.whisper_path = Path(whisper_path)
         self.model_path = Path(model_path)
         self.recordings_dir = Path(recordings_dir)
@@ -915,6 +920,10 @@ class WhisperRecorder:
         logger.transcription("Recording started... (press hotkey to stop)")
         self.is_recording = True
         self.audio_data = []
+
+        # Import sounddevice only when needed
+        import sounddevice as sd
+        import numpy as np
 
         # Start the audio stream at device's native sample rate
         self.stream = sd.InputStream(
@@ -1131,7 +1140,7 @@ class WhisperRecorder:
 
         # Play notification sound
         try:
-            sound_file = Path(__file__).parent / "assets" / "audio" / "ghost.wav"
+            sound_file = Path(__file__).parent / "asset" / "audio" / "ghost.wav"
             if sound_file.exists():
                 subprocess.run(
                     ["paplay", str(sound_file)],
@@ -1192,7 +1201,9 @@ class WhisperRecorder:
             # Try to match by path first (most reliable)
             for device in devices:
                 if device.path == config.device.path:
-                    logger.server(f"Found configured device by path: {device.name}")
+                    logger.transcription(
+                        f"Found configured device by path: {device.name}"
+                    )
                     return device
 
             # Try to match by name and physical location
@@ -1201,7 +1212,7 @@ class WhisperRecorder:
                     device.name == config.device.name
                     and device.phys == config.device.phys
                 ):
-                    logger.server(
+                    logger.transcription(
                         f"Found configured device by name/phys: {device.name}"
                     )
                     return device
@@ -1209,16 +1220,20 @@ class WhisperRecorder:
             # Try to match by name only (less reliable)
             for device in devices:
                 if device.name == config.device.name:
-                    logger.server(f"Found configured device by name: {device.name}")
+                    logger.transcription(
+                        f"Found configured device by name: {device.name}"
+                    )
                     return device
 
-            logger.server(f"Configured device not found: {config.device.name}")
+            logger.transcription(f"Configured device not found: {config.device.name}")
 
         # Fallback: find device with F2 key
         for device in devices:
             caps = device.capabilities(verbose=False)
             if ecodes.EV_KEY in caps and ecodes.KEY_F2 in caps[ecodes.EV_KEY]:
-                logger.server(f"Using fallback device with F2 key: {device.name}")
+                logger.transcription(
+                    f"Using fallback device with F2 key: {device.name}"
+                )
                 return device
 
         # Final fallback: find any keyboard device
@@ -1228,7 +1243,9 @@ class WhisperRecorder:
                 # Check if it has typical keyboard keys
                 keys = caps[ecodes.EV_KEY]
                 if ecodes.KEY_A in keys or ecodes.KEY_SPACE in keys:
-                    logger.server(f"Using fallback keyboard device: {device.name}")
+                    logger.transcription(
+                        f"Using fallback keyboard device: {device.name}"
+                    )
                     return device
 
         return None
@@ -1238,10 +1255,10 @@ class WhisperRecorder:
         config = load_config()
         device = self.find_keyboard_device()
         if not device:
-            logger.server("Error: No keyboard device found!")
+            logger.transcription("Error: No keyboard device found!")
             return
 
-        logger.server(f"Using input device: {device.name}")
+        logger.transcription(f"Using input device: {device.name}")
 
         # Get the trigger key from config
         trigger_key_code = (
@@ -1250,7 +1267,7 @@ class WhisperRecorder:
             else ecodes.KEY_F2
         )
         key_name = get_key_name(trigger_key_code)
-        logger.server(f"Listening for trigger key: {key_name}")
+        logger.transcription(f"Listening for trigger key: {key_name}")
 
         try:
             async for event in device.async_read_loop():
@@ -1259,7 +1276,7 @@ class WhisperRecorder:
                     if event.value == 1:  # Key down (1 = press, 0 = release, 2 = hold)
                         self.toggle_recording()
         except Exception as e:
-            logger.server(f"Error reading events: {e}")
+            logger.transcription(f"Error reading events: {e}")
 
 
 # Global logger instance
@@ -1322,6 +1339,101 @@ def sse():
     return response
 
 
+def run_setup_tui(kind):
+    """Run setup TUI for the specified kind."""
+    console = Console()
+
+    try:
+        config = load_config()
+
+        if kind == "device":
+            console.print("[bold cyan]Device Setup[/bold cyan]")
+            device = select_keyboard_device()
+            if device:
+                config.device = DeviceConfig(
+                    name=device.name,
+                    path=device.path,
+                    phys=device.phys,
+                    trigger_key=config.device.trigger_key if config.device else None,
+                )
+                save_config(config)
+                console.print(f"[green]✓[/green] Device configured: {device.name}")
+                return 0
+            else:
+                console.print("[yellow]Device selection cancelled[/yellow]")
+                return 1
+
+        elif kind == "trigger":
+            console.print("[bold cyan]Trigger Key Setup[/bold cyan]")
+            if not configure_device_and_trigger(config, prefer_existing_device=True):
+                console.print("[yellow]Trigger key setup cancelled[/yellow]")
+                return 1
+            return 0
+
+        elif kind == "whisper":
+            console.print("[bold cyan]Whisper Model Setup[/bold cyan]")
+            whisper_models = get_available_whisper_models()
+            if not whisper_models:
+                console.print("[red]No Whisper models found![/red]")
+                return 1
+            selected = select_whisper_model(whisper_models)
+            if selected:
+                config.whisper_model = selected
+                save_config(config)
+                console.print(f"[green]✓[/green] Whisper model configured: {selected}")
+                return 0
+            else:
+                console.print("[yellow]Whisper model selection cancelled[/yellow]")
+                return 1
+
+        elif kind == "llm":
+            console.print("[bold cyan]LLM Model Setup[/bold cyan]")
+            available_llm_models = get_available_llm_models()
+            if not available_llm_models:
+                console.print("[red]No LLM models available![/red]")
+                return 1
+            selected = select_llm_model(available_llm_models)
+            if selected:
+                config.llm_model = selected
+                save_config(config)
+                console.print(f"[green]✓[/green] LLM model configured: {selected}")
+                return 0
+            else:
+                console.print("[yellow]LLM model selection cancelled[/yellow]")
+                return 1
+
+        elif kind == "models":
+            console.print("[bold cyan]Models Setup[/bold cyan]")
+            available_llm_models = get_available_llm_models()
+            if configure_models(config, available_llm_models):
+                return 0
+            else:
+                return 1
+
+        elif kind == "all":
+            console.print("[bold cyan]Complete Setup[/bold cyan]")
+            available_llm_models = get_available_llm_models()
+            if not configure_device_and_trigger(config):
+                console.print("[yellow]Device setup cancelled[/yellow]")
+                return 1
+            if not configure_models(config, available_llm_models):
+                console.print("[red]Model setup failed[/red]")
+                return 1
+            console.print("[green]✓[/green] Complete setup finished successfully")
+            return 0
+
+        else:
+            console.print(f"[red]Unknown setup kind: {kind}[/red]")
+            return 1
+
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Setup interrupted[/yellow]")
+        return 1
+    except Exception as e:
+        console.print(f"[red]Setup error: {e}[/red]")
+        return 1
+
+
 def run_hotkey_listener():
     """Run the hotkey listener in event loop."""
     if recorder is None:
@@ -1382,6 +1494,9 @@ def main():
         return
 
     # Get whisper model path from config
+    if not config.whisper_model:
+        console.print("[red]Error: whisper model not configured[/red]")
+        return
     model_path = Path(__file__).parent / "models" / config.whisper_model
 
     if not model_path.exists():
@@ -1410,7 +1525,9 @@ def main():
 
     logger.model_name = recorder.model_path.name
     logger.llm_model = (
-        config.llm_model.split("/")[1] if "/" in config.llm_model else config.llm_model
+        config.llm_model.split("/")[1]
+        if config.llm_model and "/" in config.llm_model
+        else config.llm_model
     )
     logger.server(f"Whisper Hotkey Recorder [{recorder.model_path.name}]")
     logger.server(f"Press {trigger_key_name} to start/stop recording")
@@ -1453,10 +1570,28 @@ def main():
         )
 
 
-if __name__ == "__main__":
-    import sys
-
-    if len(sys.argv) > 1 and sys.argv[1] == "dev":
-        dev_select_device()
-    else:
+@click.group(invoke_without_command=True)
+@click.pass_context
+def cli(ctx):
+    """slap - hotkey transcription recorder"""
+    if ctx.invoked_subcommand is None:
         main()
+
+
+@cli.command()
+@click.argument(
+    "kind", type=click.Choice(["device", "trigger", "whisper", "llm", "models", "all"])
+)
+def setup(kind):
+    """Run setup TUI for specific component"""
+    sys.exit(run_setup_tui(kind))
+
+
+@cli.command()
+def dev():
+    """Run device selector test"""
+    dev_select_device()
+
+
+if __name__ == "__main__":
+    cli()

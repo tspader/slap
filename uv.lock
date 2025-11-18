@@ -665,6 +665,7 @@ name = "slap"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "click" },
     { name = "evdev" },
     { name = "flask" },
     { name = "numpy" },
@@ -678,6 +679,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "click", specifier = ">=8.0.0" },
     { name = "evdev", specifier = ">=1.9.2" },
     { name = "flask", specifier = ">=3.0.0" },
     { name = "numpy", specifier = ">=2.3.4" },

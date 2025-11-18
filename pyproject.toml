@@ -5,6 +5,7 @@ description = "press a hotkey, record, clean transcription with an LLM, copy to 
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "click>=8.0.0",
     "evdev>=1.9.2",
     "flask>=3.0.0",
     "numpy>=2.3.4",
@@ -17,7 +18,7 @@ dependencies = [
 ]
 
 [project.scripts]
-slap = "main:main"
+slap = "main:cli"
 
 [tool.setuptools]
 py-modules = ["main"]
